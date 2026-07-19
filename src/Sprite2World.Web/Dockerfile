@@ -6,8 +6,8 @@ COPY src/Sprite2World.Contracts/Sprite2World.Contracts.csproj src/Sprite2World.C
 COPY src/Sprite2World.Application/Sprite2World.Application.csproj src/Sprite2World.Application/
 COPY src/Sprite2World.Infrastructure/Sprite2World.Infrastructure.csproj src/Sprite2World.Infrastructure/
 COPY src/Sprite2World.Web/Sprite2World.Web.csproj src/Sprite2World.Web/
-RUN dotnet restore src/Sprite2World.Web/Sprite2World.Web.csproj
 COPY . .
+RUN dotnet restore src/Sprite2World.Web/Sprite2World.Web.csproj
 RUN dotnet publish src/Sprite2World.Web/Sprite2World.Web.csproj -c Release -o /app/publish --no-restore
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
