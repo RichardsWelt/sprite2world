@@ -1,0 +1,1 @@
+<Project Sdk="Microsoft.NET.Sdk.Web"><ItemGroup><ProjectReference Include="../Sprite2World.Application/Sprite2World.Application.csproj" /><ProjectReference Include="../Sprite2World.Infrastructure/Sprite2World.Infrastructure.csproj" /><ProjectReference Include="../Sprite2World.Contracts/Sprite2World.Contracts.csproj" /></ItemGroup></Project>

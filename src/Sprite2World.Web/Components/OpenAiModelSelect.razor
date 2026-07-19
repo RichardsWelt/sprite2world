@@ -1,0 +1,50 @@
+@using Sprite2World.Infrastructure
+@inject UiLocalizer Localizer
+
+<select class="@CssClass" aria-label="@(AriaLabel ?? Localizer.Get("OpenAI model", "OpenAI-Modell"))" @onchange="OnChanged">
+    @foreach (var group in OpenAiModelCatalog.Models.GroupBy(model => model.Group))
+    {
+        <optgroup label="@GroupLabel(group.Key)">
+            @foreach (var model in group)
+            {
+                <option value="@model.Id" selected="@(model.Id == Value)">@ModelLabel(model)</option>
+            }
+        </optgroup>
+    }
+</select>
+
+@code {
+    [Parameter, EditorRequired] public string Value { get; set; } = OpenAiModelCatalog.DefaultModelId;
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public string Language { get; set; } = "en";
+    [Parameter] public string CssClass { get; set; } = "model-select";
+    [Parameter] public string? AriaLabel { get; set; }
+
+    private string GroupLabel(string group) => group switch
+    {
+        "GPT-5.6 · aktuell" => Localizer.Get("GPT-5.6 · current", "GPT-5.6 · aktuell"),
+        "GPT-4.1 · kompatibel" => Localizer.Get("GPT-4.1 · compatible", "GPT-4.1 · kompatibel"),
+        "o-Serie · kompatibel" => Localizer.Get("o-series · compatible", "o-Serie · kompatibel"),
+        _ => group
+    };
+
+    private string ModelLabel(OpenAiModelDefinition model) => model.Id switch
+    {
+        "gpt-5.6-luna" => Localizer.Get("GPT-5.6 Luna · economical (default)", "GPT-5.6 Luna · günstig (Standard)"),
+        "gpt-5.6-terra" => Localizer.Get("GPT-5.6 Terra · balanced", "GPT-5.6 Terra · ausgewogen"),
+        "gpt-5.6-sol" => Localizer.Get("GPT-5.6 Sol · maximum quality", "GPT-5.6 Sol · maximale Qualität"),
+        "gpt-5.6" => Localizer.Get("GPT-5.6 · alias for Sol", "GPT-5.6 · Alias für Sol"),
+        "gpt-5.4-nano" => Localizer.Get("GPT-5.4 nano · economical", "GPT-5.4 nano · günstig"),
+        "gpt-5.4-mini" => Localizer.Get("GPT-5.4 mini · balanced", "GPT-5.4 mini · ausgewogen"),
+        "gpt-5.4" => Localizer.Get("GPT-5.4 · high quality", "GPT-5.4 · hohe Qualität"),
+        "o4-mini" => Localizer.Get("o4-mini · fast reasoning", "o4-mini · schnelles logisches Denken"),
+        "o3" => Localizer.Get("o3 · strong reasoning", "o3 · starkes logisches Denken"),
+        _ => model.DisplayName
+    };
+
+    private Task OnChanged(ChangeEventArgs args)
+    {
+        var value = args.Value?.ToString() ?? OpenAiModelCatalog.DefaultModelId;
+        return ValueChanged.InvokeAsync(value);
+    }
+}

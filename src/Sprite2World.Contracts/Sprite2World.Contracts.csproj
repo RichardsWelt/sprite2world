@@ -1,0 +1,1 @@
+<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../Sprite2World.Domain/Sprite2World.Domain.csproj" /></ItemGroup></Project>

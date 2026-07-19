@@ -1,0 +1,1688 @@
+@page "/"
+@implements IAsyncDisposable
+@inject EditorState State
+@inject UiLocalizer Localizer
+@inject OpenAiCredentialState Credentials
+@inject IJSRuntime JS
+@inject ILogger<Home> Logger
+
+<PageTitle>Sprite2World · @T("AI Level Designer", "KI-Level-Designer")</PageTitle>
+
+<div class="app-shell">
+    <main class="editor-grid @(assetPanelCollapsed || assetPanelFloating ? "assets-out" : "") @(layersCollapsed ? "right-out" : "")">
+        <nav class="global-sidebar" aria-label="@T("Project actions", "Projektaktionen")">
+            <div class="rail-brand" title="Sprite2World · @T("AI Level Designer", "KI-Level-Designer")"><img class="rail-brand-logo" src="/sprite2world-logo.png" alt="Sprite2World" /></div>
+            <button class="rail-action @(!libraryStudioOpen || libraryTab == "projects" ? "primary" : "")" @onclick="OpenWorldsSection" title="@(libraryStudioOpen && libraryTab == "sprites" ? T("Return to the active world", "Zur aktiven Welt zurückkehren") : !libraryStudioOpen ? T("Choose another world", "Andere Welt auswählen") : T("Open active world", "Aktive Welt öffnen"))">◇<span>@T("Worlds", "Welten")</span></button>
+            <button class="rail-action @(libraryStudioOpen && libraryTab == "sprites" ? "primary" : "")" @onclick="OpenSpritesSection" title="@T("Open sprite library", "Sprite-Bibliothek öffnen")">▦<span>@T("Sprites", "Sprites")</span></button>
+            <div class="rail-spacer"></div>
+            <button class="rail-action" @onclick="() => showSettings = true" title="@T("Settings", "Einstellungen")">⚙<span>@T("Settings", "Einstellungen")</span></button>
+        </nav>
+
+        @if (libraryStudioOpen)
+        {
+            <section class="library-studio panel" aria-label="@T("Sprite and project library", "Sprite- und Projektbibliothek")">
+                <header class="studio-header">
+                    <div><span class="eyebrow">@(libraryTab == "projects" ? T("WORLD LIBRARY", "WELTENBIBLIOTHEK") : T("SPRITE LIBRARY", "SPRITE-BIBLIOTHEK"))</span><h1>@(libraryTab == "projects" ? T("Worlds", "Welten") : T("Sprites", "Sprites"))</h1></div>
+                    <div class="studio-header-actions"><span class="studio-save-state">@(spriteAutosaving ? T("Saving automatically…", "Wird automatisch gespeichert…") : spriteDirty ? T("Autosave pending…", "Autosave ausstehend…") : T("All changes saved", "Alle Änderungen gespeichert"))</span><button class="button" @onclick="CloseLibraryStudio">@T("Open world", "Welt öffnen")</button></div>
+                </header>
+                <div class="studio-layout @(libraryTab == "projects" ? "projects-mode" : "")">
+                    <aside class="studio-browser">
+                        <div class="studio-tabs-row">
+                            <div class="studio-library-label"><span class="material-symbols-rounded">@(libraryTab == "projects" ? "public" : "collections")</span><strong>@(libraryTab == "projects" ? T("Your worlds", "Deine Welten") : T("Sprite assets", "Sprite-Assets"))</strong></div>
+                            <button class="studio-add" data-click-away-trigger="library-add" aria-label="@T("Add to library", "Zur Bibliothek hinzufügen")" @onclick="() => libraryAddOpen = !libraryAddOpen">＋</button>
+                            @if (libraryAddOpen)
+                            {
+                                <div class="studio-add-menu" data-click-away-panel="library-add">
+                                    @if (libraryTab == "projects") { <button @onclick="CreateProjectFromLibrary">◇ @T("New world", "Neue Welt")</button> }
+                                    else { <button @onclick="() => OpenSpriteSetup(false)">＋ @T("New sprite", "Neues Sprite")</button><button @onclick="() => OpenSpriteSetup(true)">⇧ @T("Import sprites", "Sprites importieren")</button><button @onclick="LoadStarterSprites">✦ @T("Starter sprites", "Starter-Sprites")</button> }
+                                </div>
+                                <button class="click-away-closer" data-click-away-close="library-add" tabindex="-1" aria-hidden="true" @onclick="() => libraryAddOpen = false"></button>
+                            }
+                        </div>
+                        @if (libraryTab == "sprites")
+                        {
+                            <div class="studio-search"><span>⌕</span><input placeholder="@T("Search sprites…", "Sprites suchen…")" @bind="studioSearch" @bind:event="oninput" /></div>
+                            <div class="normal-filter-row">
+                                @foreach (var filter in NormalStatusFilters)
+                                {
+                                    <button class="@(normalStatusFilter == filter.Value ? "active" : "")" @onclick="() => normalStatusFilter = filter.Value"><span class="normal-dot @filter.Css"></span>@filter.Label</button>
+                                }
+                            </div>
+                            <nav class="sprite-library-tree" aria-label="@T("Sprite folders", "Sprite-Ordner")">
+                                <div class="sprite-tree-heading"><strong>@T("Folders", "Ordner")</strong><button aria-label="@T("Create folder", "Ordner anlegen")" title="@T("Create folder", "Ordner anlegen")" @onclick="OpenCreateFolderDialog"><span class="material-symbols-rounded">add</span></button></div>
+                                <button class="sprite-tree-all @(activeLibraryTheme is null ? "active" : "")" @onclick="ShowAllSpriteFolders"><span class="material-symbols-rounded">grid_view</span><strong>@T("All sprites", "Alle Sprites")</strong><small>@StudioAssets.Count()</small></button>
+                                @foreach (var themeGroup in LibraryFolders.GroupBy(folder => folder.Theme).OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+                                {
+                                    var themeKey = themeGroup.Key;
+                                    var themeAssetCount = StudioAssets.Count(asset => string.Equals(AssetThemeKey(asset), themeKey, StringComparison.OrdinalIgnoreCase));
+                                    <div class="sprite-tree-theme">
+                                        <div class="sprite-tree-theme-row @(activeLibraryTheme == themeKey && activeLibrarySubfolder is null ? "active" : "") @(dragOverLibraryFolder == $"theme:{themeKey}" ? "drag-target" : "")" @ondragenter="() => EnterThemeDropTarget(themeKey)" @ondragover:preventDefault="true" @ondrop="() => DropSpriteOnTheme(themeKey)">
+                                            <button class="tree-toggle" aria-label="@T("Toggle folder", "Ordner aufklappen") @FolderDisplayName(themeKey)" @onclick="() => ToggleLibraryTheme(themeKey)"><span class="material-symbols-rounded">@(expandedLibraryThemes.Contains(themeKey) ? "expand_more" : "chevron_right")</span></button>
+                                            <button class="tree-label" @onclick="() => SelectLibraryFolder(themeKey, null)"><span class="material-symbols-rounded">@(expandedLibraryThemes.Contains(themeKey) ? "folder_open" : "folder")</span><strong>@FolderDisplayName(themeKey)</strong><small>@themeAssetCount</small></button>
+                                        </div>
+                                        @if (expandedLibraryThemes.Contains(themeKey))
+                                        {
+                                            <div class="sprite-tree-children">
+                                                @foreach (var folder in themeGroup.OrderBy(folder => folder.Subfolder, StringComparer.OrdinalIgnoreCase))
+                                                {
+                                                    var folderKey = folder.Subfolder;
+                                                    var folderAssetCount = StudioAssets.Count(asset => string.Equals(AssetThemeKey(asset), themeKey, StringComparison.OrdinalIgnoreCase) && string.Equals(AssetSubfolder(asset), folderKey, StringComparison.OrdinalIgnoreCase));
+                                                    <button class="@(activeLibraryTheme == themeKey && activeLibrarySubfolder == folderKey ? "active" : "") @(dragOverLibraryFolder == $"folder:{themeKey}/{folderKey}" ? "drag-target" : "")" @onclick="() => SelectLibraryFolder(themeKey, folderKey)" @ondragenter="() => EnterFolderDropTarget(themeKey, folderKey)" @ondragover:preventDefault="true" @ondrop="() => DropSpriteIntoFolder(themeKey, folderKey)"><span class="material-symbols-rounded">folder</span><strong>@folderKey</strong><small>@folderAssetCount</small></button>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </nav>
+                            <div class="studio-library-results">
+                                <div class="studio-results-heading"><div><span class="material-symbols-rounded">folder_open</span><strong>@ActiveLibraryFolderLabel</strong></div><small>@StudioLibraryAssets.Count() @T("items", "Elemente")</small></div>
+                                <div class="studio-sprite-grid">
+                                @foreach (var asset in StudioLibraryAssets)
+                                {
+                                    <article class="studio-sprite-card @(StudioAsset?.Id == asset.Id ? "selected" : "") @(activeAssetMenuId == asset.Id ? "menu-open" : "") @(draggingLibraryAssetId == asset.Id ? "dragging" : "")" @key="asset.Id">
+                                        <button class="studio-sprite-open" draggable="true" title="@T("Drag into a folder or click to edit", "In einen Ordner ziehen oder zum Bearbeiten klicken")" @ondragstart="() => BeginSpriteDrag(asset.Id)" @ondragend="EndSpriteDrag" @onclick="() => OpenStudioAsset(asset)"><span class="studio-sprite-image"><img src="@asset.Url" alt="@asset.FileName" draggable="false" /></span><strong>@asset.FileName</strong><small>@SpriteTileSizeLabel(asset) · @RoleLabel(asset.Role)</small><em class="normal-status @NormalStatusCss(asset)"><span></span>@NormalStatusLabel(asset)</em></button>
+                                        <button class="sprite-card-more" data-click-away-trigger="asset-actions" aria-label="@T("Actions for", "Aktionen für") @asset.FileName" @onclick="() => ToggleAssetMenu(asset.Id)" @onclick:stopPropagation="true"><span class="material-symbols-rounded">more_horiz</span></button>
+                                        @if (activeAssetMenuId == asset.Id)
+                                        {
+                                            <div class="sprite-card-menu" data-click-away-panel="asset-actions" role="menu">
+                                                <button role="menuitem" @onclick='() => OpenAssetManager(asset, "rename")'><span class="material-symbols-rounded">edit</span>@T("Rename", "Umbenennen")</button>
+                                                <button role="menuitem" @onclick='() => OpenAssetManager(asset, "move")'><span class="material-symbols-rounded">drive_file_move</span>@T("Move to folder", "In Ordner verschieben")</button>
+                                                <button class="danger" role="menuitem" @onclick="() => RemoveStudioAsset(asset)"><span class="material-symbols-rounded">delete</span>@T("Delete", "Löschen")</button>
+                                            </div>
+                                            <button class="click-away-closer" data-click-away-close="asset-actions" tabindex="-1" aria-hidden="true" @onclick="CloseAssetMenu"></button>
+                                        }
+                                    </article>
+                                }
+                                </div>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="studio-project-list">
+                                @if (projectList.Count == 0) { <p class="empty-copy">@T("No saved worlds yet.", "Noch keine gespeicherten Welten.")</p> }
+                                @foreach (var project in projectList)
+                                {
+                                    <article class="studio-project-card @(State.HasOpenProject && project.Id == State.ProjectId ? "current" : "") @(selectedLibraryProjectId == project.Id ? "selected" : "")">
+                                        <button class="project-card-select" title="@T("Click once for a preview and again to open", "Einmal für die Vorschau und erneut zum Öffnen klicken")" @onclick="() => SelectProjectFromLibrary(project)">
+                                            <span class="project-preview"><img src="@ProjectPreviewUrl(project)" alt="@T("Preview", "Vorschau") @LocalizedProjectName(project.Name)" /><span>@(selectedLibraryProjectId == project.Id ? T("PREVIEW", "VORSCHAU") : State.HasOpenProject && project.Id == State.ProjectId ? T("CURRENT", "AKTUELL") : T("SELECT", "AUSWÄHLEN"))</span></span>
+                                            <span class="project-card-copy"><strong>@LocalizedProjectName(project.Name)</strong><small>@LocalizedDate(project.UpdatedAt)</small></span>
+                                        </button>
+                                        <button class="project-card-delete" aria-label="@T("Delete project", "Projekt löschen") @LocalizedProjectName(project.Name)" @onclick="() => DeleteProject(project)">×</button>
+                                    </article>
+                                }
+                            </div>
+                        }
+                    </aside>
+
+                    @if (libraryTab == "sprites")
+                    {
+                        <main class="sprite-editor-workspace">
+                            <div class="sprite-editor-toolbar" role="toolbar" aria-label="@T("Sprite tools", "Sprite-Werkzeuge")">
+                                @foreach (var tool in SpriteTools)
+                                {
+                                    <button class="sprite-icon-button @(spriteTool == tool.Id ? "active" : "")" aria-label="@tool.Label" aria-keyshortcuts="@tool.Shortcut" title="@SpriteToolTitle(tool.Id, tool.Label, tool.Shortcut)" @onclick="() => SetSpriteTool(tool.Id)"><span class="material-symbols-rounded">@tool.Icon</span></button>
+                                }
+                                <i></i><button class="sprite-icon-button" aria-label="@T("Undo", "Rückgängig")" title="@T("Undo", "Rückgängig") · Ctrl+Z" @onclick="UndoSprite"><span class="material-symbols-rounded">undo</span></button><button class="sprite-icon-button" aria-label="@T("Redo", "Wiederholen")" title="@T("Redo", "Wiederholen") · Ctrl+Y" @onclick="RedoSprite"><span class="material-symbols-rounded">redo</span></button><i></i>
+                                <button class="sprite-icon-button ai-sprite-button" aria-label="@T("Draw sprite with AI", "Sprite mit KI zeichnen")" title="@SpriteAiButtonTitle" @onclick="OpenAiSpriteDialog" disabled="@(!Credentials.IsReady || StudioAsset is null || State.IsBusy)"><span class="material-symbols-rounded">auto_awesome</span><small>AI</small></button>
+                                <label class="toolbar-zoom" aria-label="@T("Zoom", "Zoom")"><select value="@SpriteZoomPercent" @onchange="ChangeSpriteZoom"><option value="25">25%</option><option value="50">50%</option><option value="100">100%</option><option value="200">200%</option><option value="400">400%</option><option value="800">800%</option></select></label>
+                                <div class="grid-scale-control">
+                                    <button class="sprite-icon-button @(spriteGrid ? "active" : "")" aria-label="@T("Grid", "Raster")" title="@T("Toggle grid", "Raster ein- oder ausblenden")" @onclick="ToggleSpriteGrid"><span class="material-symbols-rounded">grid_on</span></button>
+                                    <label title="@T("Logical grid cell size", "Größe der logischen Rasterzelle")"><select value="@spriteGridSize" @onchange="ChangeSpriteGridSize" aria-label="@T("Grid cell size", "Rasterzellengröße")"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="8">8×</option></select></label>
+                                </div>
+                                <button class="sprite-icon-button seamless-preview-button @(spriteSeamlessPreview ? "active" : "")" aria-label="@T("Seamless pattern preview", "Nahtlose Mustervorschau")" title="@T("Show the sprite as a seamless 3×3 pattern", "Sprite als nahtloses 3×3-Muster anzeigen")" aria-pressed="@spriteSeamlessPreview" @onclick="ToggleSpriteSeamlessPreview"><span class="seamless-preview-icon" aria-hidden="true"><i></i><i></i><i></i><i></i><i class="center"></i><i></i><i></i><i></i><i></i></span></button>
+                                <button class="sprite-icon-button" aria-label="@T("Settings", "Einstellungen")" title="@T("Settings", "Einstellungen")" @onclick="() => showSettings = true"><span class="material-symbols-rounded">settings</span></button>
+                                <button class="sprite-icon-button sprite-export-button" aria-label="@T("Export sprite", "Sprite exportieren")" title="@T("Export current sprite", "Aktuellen Sprite exportieren")" @onclick="OpenSpriteExportDialog" disabled="@(StudioAsset is null)"><span class="material-symbols-rounded">file_download</span><small>@T("Export", "Export")</small></button>
+                            </div>
+                            @if (StudioAsset is not null && (StudioAsset.Width != SpriteTilePixels || StudioAsset.Height != SpriteTilePixels)) { <div class="ai-size-warning"><span>AI</span><p>@T("AI drawing currently works on one 48×48 tile. Multi-tile sprites remain fully editable by hand.", "KI-Zeichnen arbeitet aktuell auf einer 48×48-Kachel. Mehrkachel-Sprites bleiben vollständig manuell bearbeitbar.")</p><button @onclick="CreateAiSizedCopy">@T("Create 1×1 tile copy", "1×1-Kachel-Kopie anlegen")</button></div> }
+                            @if (StudioAsset is null)
+                            {
+                                <div class="studio-empty"><strong>@T("Select a sprite", "Sprite auswählen")</strong><span>@T("Choose an asset from the library to edit it.", "Wähle ein Asset aus der Bibliothek, um es zu bearbeiten.")</span></div>
+                            }
+                            else
+                            {
+                                <div class="sprite-editor-body">
+                                    <aside class="sprite-brush-panel">
+                                        <section><h2>@T("Brush", "Pinsel")</h2><div class="brush-preview"><span style="--brush-preview:@BrushPreviewSize"></span></div>@foreach (var size in BrushSizePresets) { <button class="brush-preset @(spriteBrushSize == size ? "active" : "")" @onclick="() => SetSpriteBrushSize(size)"><span style="--brush-dot:@BrushDotSize(size)"></span><strong>@size<span>px</span></strong></button> }</section>
+                                        <section class="brush-color-card"><h2>@T("Color", "Farbe")</h2><div class="dual-color-picker"><label class="primary-color" style="--picker-color:@spriteColor" title="@T("Left mouse button color", "Farbe der linken Maustaste")"><input type="color" value="@spriteColor" @onchange="ChangeSpriteColor" aria-label="@T("Left mouse button color", "Farbe der linken Maustaste")" /></label><label class="secondary-color" style="--picker-color:@spriteSecondaryColor" title="@T("Right mouse button color", "Farbe der rechten Maustaste")"><input type="color" value="@spriteSecondaryColor" @onchange="ChangeSpriteSecondaryColor" aria-label="@T("Right mouse button color", "Farbe der rechten Maustaste")" /></label></div><div class="mouse-color-hints"><span><i></i>@T("Left", "Links")</span><span><i></i>@T("Right", "Rechts")</span></div><button class="swap-color" aria-label="@T("Swap colors", "Farben tauschen")" title="@T("Swap left and right mouse colors", "Farben der linken und rechten Maustaste tauschen")" @onclick="SwapSpriteColors"><span class="material-symbols-rounded">swap_horiz</span></button></section>
+                                    </aside>
+                                    <div class="sprite-canvas-column"><div class="sprite-editor-title"><strong>@StudioAsset.FileName</strong><span>@SpriteTileSizeLabel(StudioAsset) · @MaterialChannelLabel(activeMaterialChannel)</span></div><div class="sprite-canvas-shell"><canvas id="spriteEditorCanvas" aria-label="@T("Pixel editor", "Pixel-Editor")"></canvas>@if (spriteTool == "select") { <div class="selection-command-bar" role="toolbar" aria-label="@T("Selection actions", "Auswahlaktionen")"><button title="Ctrl/Cmd+A" @onclick="SelectAllSpritePixels"><span class="material-symbols-rounded">select_all</span>@T("All", "Alles")</button><button title="@T("Ctrl/Cmd+C · Attach to cursor until Esc", "Ctrl/Cmd+C · Bis Esc am Cursor")" @onclick="CopySpriteSelection"><span class="material-symbols-rounded">content_copy</span>@T("Copy", "Kopieren")</button><button title="@T("Ctrl/Cmd+X · Attach to cursor until Esc", "Ctrl/Cmd+X · Bis Esc am Cursor")" @onclick="CutSpriteSelection"><span class="material-symbols-rounded">content_cut</span>@T("Cut", "Ausschneiden")</button><button class="danger" title="Backspace / Delete" @onclick="DeleteSpriteSelection"><span class="material-symbols-rounded">delete</span>@T("Delete", "Löschen")</button><button title="Esc" @onclick="ClearSpriteSelection"><span class="material-symbols-rounded">deselect</span>@T("Cancel", "Abbrechen")</button></div> }@if (aiSpriteDrawing) { <div class="ai-drawing-badge"><span class="material-symbols-rounded">auto_awesome</span><strong>@T("AI is drawing…", "KI zeichnet…")</strong></div> }</div></div>
+                                    <aside class="sprite-color-panel">
+                                        @if (activeMaterialChannel == MaterialChannel.Lit)
+                                        {
+                                            <div class="palette-heading"><strong>@T("Preview mode", "Vorschaumodus")</strong><small>@T("Move the pointer over the canvas to position the light. Fine-tune the material with the controls on the right.", "Bewege den Mauszeiger über die Zeichenfläche, um das Licht zu positionieren. Das Material stellst du rechts fein ein.")</small></div>
+                                        }
+                                        else
+                                        {
+                                            <div class="palette-heading"><strong>@T("Palette", "Palette")</strong><small>@PaletteHint</small></div><div class="palette-actions"><button aria-label="@T("Add current color to palette", "Aktuelle Farbe zur Palette hinzufügen")" title="@T("Add the large left-click color", "Die große Linksklick-Farbe hinzufügen")" @onclick="AddCurrentColorToPalette"><span class="material-symbols-rounded">add</span></button><button aria-label="@T("Remove selected color", "Ausgewählte Farbe entfernen")" title="@T("Remove the selected left-click color", "Die ausgewählte Linksklick-Farbe entfernen")" @onclick="RequestDeletePaletteColor" disabled="@(!ActiveSpritePalette.Contains(spriteColor, StringComparer.OrdinalIgnoreCase))"><span class="material-symbols-rounded">remove</span></button></div><div class="palette-grid" aria-label="@T("Color palette: left click selects the large color, right click selects the small color", "Farbpalette: Linksklick wählt die große Farbe, Rechtsklick die kleine Farbe")">@foreach (var color in ActiveSpritePalette) { <button class="@(PaletteColorCss(color))" style="background:@color" aria-label="@color" title="@T("Left click: primary · Right click: secondary", "Linksklick: Hauptfarbe · Rechtsklick: Nebenfarbe")" @onclick="() => PickPaletteColor(color)" @oncontextmenu="() => PickPaletteSecondaryColor(color)" @oncontextmenu:preventDefault="true"></button> }</div><label class="palette-hex"><span>#</span><input value="@spriteColor.TrimStart('#').ToUpperInvariant()" maxlength="6" @onchange="ChangeSpriteHex" aria-label="@T("Hex color", "Hex-Farbe")" /></label>
+                                        }
+                                    </aside>
+                                </div>
+                            }
+                        </main>
+
+                        <aside class="studio-inspector">
+                            @if (StudioAsset is not null)
+                            {
+                                <section class="sprite-status-section">
+                                    <div><span>@T("Sprite status", "Sprite-Status")</span><strong>@(StudioAsset.NormalMapStatus == DerivedAssetStatus.Ready ? T("Finished material", "Fertiges Material") : T("Material in progress", "Material in Bearbeitung"))</strong></div>
+                                    <button class="@(StudioAsset.NormalMapStatus == DerivedAssetStatus.Ready ? "ready" : "not-ready")" @onclick="FinalizeStudioSprite" disabled="@(State.IsBusy || StudioAsset.NormalMapStatus == DerivedAssetStatus.Ready)" title="@(StudioAsset.NormalMapStatus == DerivedAssetStatus.Ready ? T("This sprite is ready", "Dieser Sprite ist fertig") : T("Finish sprite and mark Ready", "Sprite fertigstellen und auf Ready setzen"))"><span class="material-symbols-rounded">@(StudioAsset.NormalMapStatus == DerivedAssetStatus.Ready ? "task_alt" : "pending")</span>@(StudioAsset.NormalMapStatus == DerivedAssetStatus.Ready ? T("Ready", "Bereit") : T("Not ready", "Nicht bereit"))</button>
+                                </section>
+                                <div class="material-channel-scroll">
+                                    <div class="material-list-heading"><strong>@T("Material", "Material")</strong><span>@T("Texture channels", "Texturkanäle")</span></div>
+                                    @foreach (var channel in MaterialChannels)
+                                    {
+                                        <div class="material-channel-item @(activeMaterialChannel == channel ? "active" : "")">
+                                            <button class="material-channel-summary" @onclick="() => SetMaterialChannel(channel)" aria-expanded="@(activeMaterialChannel == channel)">
+                                                <img src="@MaterialThumbnail(StudioAsset, channel)" alt="" />
+                                                <span><strong>@MaterialChannelLabel(channel)</strong><small>@MaterialChannelState(StudioAsset, channel)</small></span>
+                                                <span class="material-symbols-rounded">@(activeMaterialChannel == channel ? "expand_less" : "expand_more")</span>
+                                            </button>
+                                            @if (activeMaterialChannel == channel)
+                                            {
+                                                <div class="material-channel-controls">
+                                                    @if (channel == MaterialChannel.Base) { <label class="sprite-world-use"><span>@T("World use", "Verwendung in der Welt")</span><select value="@StudioAssetWorldUse" @onchange="ChangeStudioAssetWorldUse"><option value="Element">@T("Element · optionally free", "Element · optional frei")</option><option value="Floor">@T("Floor · always on grid", "Boden · immer im Raster")</option><option value="Wall">@T("Wall · always on grid", "Wand · immer im Raster")</option></select></label><p>@T("Edit the base color and silhouette in the main canvas. Floor and wall sprites always snap to the 48 px world grid.", "Bearbeite Grundfarbe und Silhouette im großen Canvas. Boden- und Wand-Sprites rasten immer im 48-px-Weltraster ein.")</p> }
+                                                    else if (channel == MaterialChannel.Normal) { <label>@T("Normal strength", "Normal-Stärke")<output>@StudioAsset.NormalStrength.ToString("0.0")</output></label><input class="wide-range" type="range" min="0.1" max="4" step="0.1" value="@StudioAsset.NormalStrength" @oninput="ChangeNormalStrength" /><label class="switch-row">@T("Invert Y", "Y invertieren")<input type="checkbox" checked="@StudioAsset.NormalInvertY" @onchange="ChangeNormalInvertY" /></label><button class="button full" @onclick="() => GenerateNormalForAsset(StudioAsset)" disabled="@State.IsBusy">↻ @(StudioAsset.NormalMapUrl is null ? T("Generate normal", "Normal Map generieren") : T("Regenerate normal", "Normal Map neu generieren"))</button> }
+                                                    else if (channel == MaterialChannel.Metallic) { <label>@T("Metallic influence", "Metallic-Einfluss")<output>@StudioAsset.MetallicStrength.ToString("0.00")</output></label><input class="wide-range" type="range" min="0" max="1" step="0.05" value="@StudioAsset.MetallicStrength" @oninput="ChangeMetallicStrength" /> }
+                                                    else if (channel == MaterialChannel.Roughness) { <label>@T("Surface roughness", "Oberflächenrauheit")<output>@StudioAsset.RoughnessStrength.ToString("0.00")</output></label><input class="wide-range" type="range" min="0" max="1" step="0.05" value="@StudioAsset.RoughnessStrength" @oninput="ChangeRoughnessStrength" /> }
+                                                    else if (channel == MaterialChannel.Lit) { <label>@T("Normal strength", "Normal-Stärke")<output>@StudioAsset.NormalStrength.ToString("0.0")</output></label><input class="wide-range" type="range" min="0.1" max="4" step="0.1" value="@StudioAsset.NormalStrength" @oninput="ChangeNormalStrength" /><label>@T("Metallic", "Metallic")<output>@StudioAsset.MetallicStrength.ToString("0.00")</output></label><input class="wide-range" type="range" min="0" max="1" step="0.05" value="@StudioAsset.MetallicStrength" @oninput="ChangeMetallicStrength" /><label>@T("Roughness", "Rauheit")<output>@StudioAsset.RoughnessStrength.ToString("0.00")</output></label><input class="wide-range" type="range" min="0" max="1" step="0.05" value="@StudioAsset.RoughnessStrength" @oninput="ChangeRoughnessStrength" /><label>@T("Light intensity", "Lichtstärke")<output>@StudioAsset.LightIntensity.ToString("0.0")</output></label><input class="wide-range" type="range" min="0.1" max="3" step="0.1" value="@StudioAsset.LightIntensity" @oninput="ChangeLightIntensity" /> }
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                                <section class="lit-preview-section pinned-lit-preview"><div class="inspector-section-title"><h3>@T("Lit preview", "Beleuchtete Vorschau")</h3><button class="lighting-toggle @(spriteLighting ? "active" : "")" @onclick="ToggleSpriteLighting" aria-pressed="@spriteLighting">☼ @(spriteLighting ? T("Light on", "Licht an") : T("Light off", "Licht aus"))</button></div><div class="lit-preview-shell"><canvas id="spriteLitCanvas" aria-label="@T("Material lighting preview", "Material-Lichtvorschau")"></canvas></div></section>
+                            }
+                        </aside>
+                    }
+                    else if (SelectedLibraryProject is { } selectedProject)
+                    {
+                        <main class="project-library-preview" aria-label="@T("Selected world preview", "Vorschau der ausgewählten Welt")">
+                            <div class="project-library-preview-stage"><img src="@ProjectPreviewUrl(selectedProject)" alt="@T("World preview", "Weltenvorschau") @LocalizedProjectName(selectedProject.Name)" /></div>
+                            <div class="project-library-preview-footer">
+                                <div><span class="eyebrow">@T("SELECTED WORLD", "AUSGEWÄHLTE WELT")</span><h2>@LocalizedProjectName(selectedProject.Name)</h2><p>@LocalizedDate(selectedProject.UpdatedAt) · @T("Click the selected card again or use the button to open it.", "Klicke die ausgewählte Karte erneut oder nutze den Button zum Öffnen.")</p></div>
+                                <button class="button primary project-open-button" @onclick="() => OpenProjectFromLibrary(selectedProject.Id)"><span class="material-symbols-rounded">arrow_forward</span>@T("Open world", "Welt öffnen")</button>
+                            </div>
+                        </main>
+                    }
+                    else
+                    {
+                        <main class="project-library-hero brand-hero"><div><img class="world-library-logo" src="/sprite2world-logo.png" alt="Sprite2World" /><p>@T("Select a world on the left to see its preview. A second click opens it.", "Wähle links eine Welt aus, um ihre Vorschau zu sehen. Ein zweiter Klick öffnet sie.")</p><button class="button primary" @onclick="CreateProjectFromLibrary">＋ @T("New world", "Neue Welt")</button></div></main>
+                    }
+                </div>
+            </section>
+        }
+
+        @if (showSpriteSetupDialog)
+        {
+            <div class="modal-backdrop sprite-setup-backdrop" @onclick="() => showSpriteSetupDialog = false">
+                <div class="settings-modal panel sprite-setup-modal" role="dialog" aria-modal="true" aria-labelledby="sprite-setup-title" @onkeydown="HandleSpriteSetupKey" @onclick:stopPropagation="true">
+                    <div class="modal-heading"><div><span class="eyebrow">@(spriteSetupImport ? T("IMPORT SPRITES", "SPRITES IMPORTIEREN") : T("NEW SPRITE", "NEUES SPRITE"))</span><h2 id="sprite-setup-title">@T("Choose a bounded canvas", "Begrenzte Canvas-Größe wählen")</h2></div><button class="icon-button" aria-label="@T("Close", "Schließen")" @onclick="() => showSpriteSetupDialog = false">×</button></div>
+                    <section>
+                        @if (!spriteSetupImport) { <label>@T("Name", "Name")<input @bind="newSpriteName" @bind:event="oninput" maxlength="64" /></label> }
+                        <div class="size-preset-row">@foreach (var size in SpriteTilePresets) { <button class="@(newSpriteTilesWide == size.Width && newSpriteTilesHigh == size.Height ? "active" : "")" @onclick="() => SetSpriteTileSize(size.Width, size.Height)">@size.Width × @size.Height @T("tiles", "Kacheln")</button> }</div>
+                        <div class="sprite-size-fields tile-unit-fields"><label>@T("Tiles wide", "Kacheln breit")<input type="number" min="1" max="8" @bind="newSpriteTilesWide" /></label><span>×</span><label>@T("Tiles high", "Kacheln hoch")<input type="number" min="1" max="8" @bind="newSpriteTilesHigh" /></label></div>
+                        <div class="sprite-pixel-result"><span class="material-symbols-rounded">grid_4x4</span><strong>@NewSpritePixelWidth × @NewSpritePixelHeight px</strong><small>@T("Each world tile is exactly 48×48 pixels.", "Jede Weltkachel ist exakt 48×48 Pixel groß.")</small></div>
+                        @if (!spriteSetupImport)
+                        {
+                            <label class="sprite-folder-select"><span><span class="material-symbols-rounded">folder</span>@T("Folder", "Ordner")</span>
+                                <select @bind="NewSpriteFolderPath">
+                                    @foreach (var themeGroup in NewSpriteFolderChoices.GroupBy(folder => folder.Theme).OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+                                    {
+                                        <optgroup label="@FolderDisplayName(themeGroup.Key)">
+                                            @foreach (var folder in themeGroup.OrderBy(folder => folder.Subfolder, StringComparer.OrdinalIgnoreCase))
+                                            {
+                                                <option value="@LibraryFolderPath(folder.Theme, folder.Subfolder)">@FolderDisplayName(folder.Theme) / @folder.Subfolder</option>
+                                            }
+                                        </optgroup>
+                                    }
+                                </select>
+                            </label>
+                        }
+                        @if (spriteSetupImport) { <p class="settings-note">@T("Every imported PNG is resized pixel-perfect to the selected 48 px tile footprint.", "Jedes importierte PNG wird pixelgenau auf die gewählte 48-px-Kachelfläche skaliert.")</p> }
+                    </section>
+                    @if (spriteSetupImport) { <label class="button primary full sprite-file-action">⇧ @T("Choose PNG files", "PNG-Dateien auswählen")<InputFile OnChange="ImportFiles" multiple accept=".png,image/png" /></label> }
+                    else { <button class="button primary full sprite-create-action" @onclick="CreateBlankSprite" disabled="@State.IsBusy">＋ @T("Create sprite", "Sprite anlegen")</button> }
+                </div>
+            </div>
+        }
+
+        @if (showDeletePaletteColorDialog && pendingPaletteColor is not null)
+        {
+            <div class="modal-backdrop palette-delete-backdrop" @onclick="CloseDeletePaletteColorDialog">
+                <div class="settings-modal panel palette-delete-modal" role="dialog" aria-modal="true" aria-labelledby="palette-delete-title" @onclick:stopPropagation="true">
+                    <div class="modal-heading"><div><span class="eyebrow">@T("COLOR PALETTE", "FARBPALETTE")</span><h2 id="palette-delete-title">@T("Delete color?", "Farbe löschen?")</h2></div><button class="icon-button" aria-label="@T("Close", "Schließen")" @onclick="CloseDeletePaletteColorDialog">×</button></div>
+                    <section><div class="palette-delete-color" style="--delete-color:@pendingPaletteColor"></div><div><strong>@pendingPaletteColor.ToUpperInvariant()</strong><p>@T("Do you really want to remove this color from the current palette?", "Möchtest du diese Farbe wirklich aus der aktuellen Palette entfernen?")</p></div></section>
+                    <div class="palette-delete-actions"><button class="button" @onclick="CloseDeletePaletteColorDialog">@T("Cancel", "Abbrechen")</button><button class="button danger" @onclick="DeletePaletteColor"><span class="material-symbols-rounded">delete</span>@T("Delete color", "Farbe löschen")</button></div>
+                </div>
+            </div>
+        }
+
+        @if (showAiSpriteDialog && StudioAsset is not null)
+        {
+            <div class="modal-backdrop ai-sprite-backdrop" @onclick="DiscardAiSprite">
+                <div class="settings-modal panel ai-sprite-modal @(aiSuccessPulse ? "ai-magic-success" : "")" role="dialog" aria-modal="true" aria-labelledby="ai-sprite-title" @onkeydown="HandleAiSpriteKey" @onclick:stopPropagation="true">
+                    <div class="modal-heading"><div><span class="eyebrow">@T("AI SPRITE ARTIST", "KI-SPRITE-ZEICHNER")</span><h2 id="ai-sprite-title">@T("What should I draw?", "Was soll ich zeichnen?")</h2></div><button class="icon-button" aria-label="@T("Close", "Schließen")" @onclick="DiscardAiSprite">×</button></div>
+                    @if (!SpriteAiSizeSupported)
+                    {
+                        <div class="ai-size-warning ai-size-dialog-warning"><span>AI</span><p>@T($"The selected {SpriteTileSizeLabel(StudioAsset)} sprite is larger than the AI generator limit of 64×64 pixels. Create a linked 1×1 working copy and generate there.", $"Der ausgewählte Sprite mit {SpriteTileSizeLabel(StudioAsset)} ist größer als das KI-Limit von 64×64 Pixeln. Erstelle eine verknüpfte 1×1-Arbeitskopie und generiere dort.")</p><button @onclick="CreateAiSizedCopy">@T("Create 1×1 AI working copy", "1×1-KI-Arbeitskopie erstellen")</button></div>
+                    }
+                    <section>
+                        <label>@T("Description", "Beschreibung")<textarea @bind="aiSpritePrompt" @bind:event="oninput" maxlength="600" placeholder="@T("e.g. a heavy blacksmith hammer with a wooden handle", "z. B. ein schwerer Schmiedehammer mit Holzgriff")"></textarea></label>
+                        <div class="ai-art-controls"><label>@T("View", "Ansicht")<select @bind="aiSpriteView"><option>Auto</option><option value="Side">@T("Side", "Seite")</option><option value="Three-quarter">@T("Three-quarter", "Dreiviertel")</option><option value="Front">@T("Front", "Vorne")</option></select></label><label>@T("Framing", "Bildausschnitt")<select @bind="aiSpriteFraming"><option value="Full subject">@T("Full subject", "Ganzes Motiv")</option><option value="Icon">Icon</option><option value="Portrait">@T("Portrait", "Porträt")</option></select></label><label>@T("Outline", "Kontur")<select @bind="aiSpriteOutline"><option value="None">@T("None", "Keine")</option><option value="1 px">1 px</option><option value="2 px">2 px</option></select></label><label>@T("Light", "Licht")<select @bind="aiSpriteLighting"><option value="Top left">@T("Top left", "Oben links")</option><option value="Top right">@T("Top right", "Oben rechts")</option><option value="Front">@T("Front", "Vorne")</option></select></label></div>
+                        <label>@T("Palette or style reference", "Palette oder Stilreferenz")<input @bind="aiSpritePaletteHint" @bind:event="oninput" maxlength="160" placeholder="@T("e.g. muted beach palette, match current sprite", "z. B. gedeckte Strandpalette, aktuelles Sprite angleichen")" /></label>
+                        <div class="ai-canvas-facts"><span><strong>@StudioAsset.Width × @StudioAsset.Height</strong>@T("Canvas size", "Canvas-Größe")</span><span><strong>16</strong>@T("colors maximum", "Farben maximal")</span><span><strong>PNG</strong>@T("transparent", "transparent")</span></div>
+                        <p>@T("By default, AI draws the complete object or full body, keeps outlines and structural lines continuous, and leaves unused cells transparent. Ask explicitly for a portrait or front view only when you want one.", "Standardmäßig zeichnet die KI das vollständige Objekt beziehungsweise den ganzen Körper, hält Konturen und Konstruktionslinien durchgängig und lässt ungenutzte Felder transparent. Bitte nur ausdrücklich um Porträt oder Frontansicht, wenn du das möchtest.")</p>
+                        @if (aiSpriteCandidate is not null) { <div class="ai-candidate"><canvas id="aiSpritePreview" aria-label="@T("Generated sprite preview", "Vorschau des generierten Sprites")"></canvas><div><strong>@aiSpriteCandidate.Name</strong><span class="@(aiSpriteCandidate.Quality.Passed ? "quality-pass" : "quality-warning")">@(aiSpriteCandidate.Quality.Passed ? T("Automatic checks passed", "Automatische Prüfungen bestanden") : T("Check the highlighted quality notes", "Markierte Qualitätshinweise prüfen"))</span>@foreach (var issue in aiSpriteCandidate.Quality.Issues) { <small>• @issue.Message</small> }</div></div> }
+                    </section>
+                    @if (aiRequestActive)
+                    {
+                        <div class="ai-communication-status" role="status" aria-live="polite" aria-label="@T("OpenAI request activity", "OpenAI-Anfrageaktivität")">
+                            <div class="ai-transmission-card">
+                                <span class="material-symbols-rounded" aria-hidden="true">outgoing_mail</span>
+                                <div><small>@T("REQUEST SENT", "ANFRAGE GESENDET")</small><strong>OpenAI</strong><p>@T("Your sprite brief is on its way.", "Dein Sprite-Briefing ist unterwegs.")</p></div>
+                            </div>
+                            <div class="ai-activity-console">
+                                <header><span></span><small>@T("LIVE ACTIVITY", "LIVE-AKTIVITÄT")</small><i>@T("working", "arbeitet")</i></header>
+                                <code><span>&gt; @T("request accepted", "Anfrage angenommen")</span><span>&gt; @aiProgressStep</span><span class="ai-console-wait">&gt; @T("waiting for model response", "warte auf Modellantwort")<b aria-hidden="true">•••</b></span></code>
+                            </div>
+                        </div>
+                    }
+                    else if (!string.IsNullOrWhiteSpace(aiProgressStep))
+                    {
+                        <div class="ai-operation-status @(aiProgressFailed ? "failed" : aiProgressSpinning ? "working" : "complete")" aria-live="polite">
+                            @if (aiProgressSpinning) { <span class="ai-step-spinner" aria-hidden="true"></span> }
+                            else { <span class="material-symbols-rounded ai-step-check" aria-hidden="true">@(aiProgressFailed ? "error" : "check_circle")</span> }
+                            <div><small>@T(aiProgressFailed ? "ERROR" : "CURRENT STEP", aiProgressFailed ? "FEHLER" : "AKTUELLER SCHRITT")</small><strong>@aiProgressStep</strong>@if (!string.IsNullOrWhiteSpace(aiProgressDetail)) { <p>@aiProgressDetail</p> }</div>
+                        </div>
+                    }
+                    @if (aiSpriteCandidate is null && !aiRequestActive && !State.IsBusy) { <button class="button primary full ai-generate-action" @onclick="GenerateAiSprite" disabled="@(!Credentials.IsReady || !SpriteAiSizeSupported || string.IsNullOrWhiteSpace(aiSpritePrompt))"><span class="material-symbols-rounded">auto_awesome</span>AI</button> }
+                    else if (aiRequestActive || State.IsBusy) { <div class="ai-candidate-actions ai-busy-actions"><button class="button danger" @onclick="CancelAiSprite">@T("Cancel", "Abbrechen")</button></div> }
+                    else { <div class="ai-candidate-actions"><button class="button" @onclick="DiscardAiSprite">@T("Discard", "Verwerfen")</button><button class="button" @onclick="GenerateAiSprite" disabled="@(State.IsBusy || !Credentials.IsReady || !SpriteAiSizeSupported)">@T("New variant", "Neue Variante")</button><button class="button primary" @onclick="AcceptAiSprite">@T("Apply", "Übernehmen")</button></div> }
+                </div>
+            </div>
+        }
+
+        @if (showCreateFolderDialog)
+        {
+            <div class="modal-backdrop asset-manager-backdrop" @onclick="CloseCreateFolderDialog">
+                <div class="settings-modal panel asset-manager-modal folder-create-modal" role="dialog" aria-modal="true" aria-labelledby="folder-create-title" @onclick:stopPropagation="true">
+                    <div class="modal-heading"><div><span class="eyebrow">@T("SPRITE LIBRARY", "SPRITE-BIBLIOTHEK")</span><h2 id="folder-create-title">@T("Create folder", "Ordner anlegen")</h2></div><button class="icon-button" aria-label="@T("Close", "Schließen")" @onclick="CloseCreateFolderDialog">×</button></div>
+                    <section class="asset-folder-picker">
+                        <h3>@T("Existing structure", "Vorhandene Struktur")</h3>
+                        <div class="asset-folder-tree" role="tree">
+                            @foreach (var themeGroup in LibraryFolders.GroupBy(folder => folder.Theme).OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+                            {
+                                <div class="asset-folder-tree-group" role="treeitem" aria-expanded="true"><button class="folder-theme-choice @(newFolderTheme == themeGroup.Key && string.IsNullOrWhiteSpace(newFolderSubfolder) ? "active" : "")" @onclick="() => SelectNewFolderTheme(themeGroup.Key)"><span class="material-symbols-rounded">folder_open</span><strong>@FolderDisplayName(themeGroup.Key)</strong></button>
+                                    @foreach (var folder in themeGroup.OrderBy(folder => folder.Subfolder, StringComparer.OrdinalIgnoreCase))
+                                    {
+                                        <button @onclick="() => SelectNewFolderParent(themeGroup.Key, folder.Subfolder)"><span class="material-symbols-rounded">subdirectory_arrow_right</span><strong>@folder.Subfolder</strong></button>
+                                    }
+                                </div>
+                            }
+                        </div>
+                        <div class="asset-folder-custom"><label>@T("Theme", "Thema")<input autofocus @bind="newFolderTheme" @bind:event="oninput" maxlength="40" placeholder="@T("e.g. Beach", "z. B. Strand")" /></label><label>@T("Subfolder (optional)", "Unterordner (optional)")<input @bind="newFolderSubfolder" @bind:event="oninput" maxlength="40" placeholder="@T("e.g. Decoration", "z. B. Dekoration")" /></label></div>
+                        <p class="settings-note">@T("Without a subfolder, a default “Sprites” folder is created. Empty folders remain in the project.", "Ohne Unterordner wird ein Standardordner „Sprites“ angelegt. Leere Ordner bleiben im Projekt erhalten.")</p>
+                    </section>
+                    <button class="button primary full" @onclick="CreateLibraryFolder" disabled="@string.IsNullOrWhiteSpace(newFolderTheme)">＋ @T("Create folder", "Ordner anlegen")</button>
+                </div>
+            </div>
+        }
+
+        @if (showAssetManagerDialog && ManagedLibraryAsset is not null)
+        {
+            <div class="modal-backdrop asset-manager-backdrop" @onclick="CloseAssetManager">
+                <div class="settings-modal panel asset-manager-modal" role="dialog" aria-modal="true" aria-labelledby="asset-manager-title" @onclick:stopPropagation="true">
+                    <div class="modal-heading"><div><span class="eyebrow">@T("SPRITE LIBRARY", "SPRITE-BIBLIOTHEK")</span><h2 id="asset-manager-title">@(assetManagerMode == "rename" ? T("Rename sprite", "Sprite umbenennen") : T("Move sprite", "Sprite verschieben"))</h2></div><button class="icon-button" aria-label="@T("Close", "Schließen")" @onclick="CloseAssetManager">×</button></div>
+                    <section class="asset-manager-summary"><img src="@ManagedLibraryAsset.Url" alt="" /><div><strong>@ManagedLibraryAsset.FileName</strong><small>@ManagedLibraryAsset.Width×@ManagedLibraryAsset.Height · @FolderDisplayName(AssetThemeKey(ManagedLibraryAsset)) / @AssetSubfolder(ManagedLibraryAsset)</small></div></section>
+                    @if (assetManagerMode == "rename")
+                    {
+                        <section><label>@T("New name", "Neuer Name")<input autofocus @bind="assetManagerName" @bind:event="oninput" maxlength="72" /></label><p class="settings-note">@T("The PNG extension is kept automatically.", "Die PNG-Endung bleibt automatisch erhalten.")</p></section>
+                    }
+                    else
+                    {
+                        <section class="asset-folder-picker">
+                            <h3>@T("Choose destination", "Zielordner auswählen")</h3>
+                            <div class="asset-folder-tree" role="tree">
+                                @foreach (var themeGroup in LibraryFolders.GroupBy(folder => folder.Theme).OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+                                {
+                                    <div class="asset-folder-tree-group" role="treeitem" aria-expanded="true"><div><span class="material-symbols-rounded">folder_open</span><strong>@FolderDisplayName(themeGroup.Key)</strong></div>
+                                        @foreach (var folder in themeGroup.OrderBy(folder => folder.Subfolder, StringComparer.OrdinalIgnoreCase))
+                                        {
+                                            var folderAssetCount = State.Assets.Count(asset => string.Equals(AssetThemeKey(asset), themeGroup.Key, StringComparison.OrdinalIgnoreCase) && string.Equals(AssetSubfolder(asset), folder.Subfolder, StringComparison.OrdinalIgnoreCase));
+                                            <button class="@(assetManagerTheme == themeGroup.Key && assetManagerSubfolder == folder.Subfolder ? "active" : "")" @onclick="() => SelectAssetManagerFolder(themeGroup.Key, folder.Subfolder)"><span class="material-symbols-rounded">folder</span><strong>@folder.Subfolder</strong><small>@folderAssetCount</small></button>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                            <div class="asset-folder-custom"><label>@T("Theme", "Thema")<input @bind="assetManagerTheme" @bind:event="oninput" maxlength="40" /></label><label>@T("Subfolder", "Unterordner")<input @bind="assetManagerSubfolder" @bind:event="oninput" maxlength="40" /></label></div>
+                        </section>
+                    }
+                    <button class="button primary full" @onclick="SaveAssetManager" disabled="@(assetManagerMode == "rename" ? string.IsNullOrWhiteSpace(assetManagerName) : string.IsNullOrWhiteSpace(assetManagerTheme) || string.IsNullOrWhiteSpace(assetManagerSubfolder))">@(assetManagerMode == "rename" ? T("Save name", "Namen speichern") : T("Move sprite", "Sprite verschieben"))</button>
+                </div>
+            </div>
+        }
+
+        <aside class="asset-panel panel @(assetPanelCollapsed ? "panel-collapsed" : "") @(assetPanelFloating ? "floating-panel assets-floating" : "")">
+            <div class="panel-heading"><div><span class="eyebrow">@T("ASSET LIBRARY", "ASSET-BIBLIOTHEK")</span><strong>@State.Assets.Count.ToString("N0") @T("sprites", "Sprites")</strong></div><div class="panel-controls"><button class="tiny-button" @onclick="State.LoadDemoAsync" disabled="@State.IsBusy">@T("Starter pack", "Starterpaket")</button><button class="tiny-button" title="@T("Undock", "Abdocken")" @onclick="ToggleAssetFloating">◲</button><button class="tiny-button" title="@T("Minimize", "Minimieren")" @onclick="() => assetPanelCollapsed = true">—</button></div></div>
+            <div class="asset-actions">
+                <label class="button primary compact" title="@T("Select up to 10,000 PNG files or ZIP archives", "Bis zu 10.000 PNG-Dateien oder ZIP-Archive auswählen")">⇧ @T("Import many", "Mehrfachimport")<InputFile OnChange="ImportFiles" multiple accept=".png,.zip,image/png,application/zip" /></label>
+                <button class="button compact" @onclick="State.ClassifyAsync" disabled="@(!Credentials.IsReady || State.IsBusy || State.Assets.Count == 0)" title="@(Credentials.IsReady ? T("Classify imported sprites with AI", "Importierte Sprites mit AI klassifizieren") : T("Add a valid API key in Settings first", "Zuerst einen gültigen API-Schlüssel in den Einstellungen hinterlegen"))">✦ AI</button>
+            </div>
+            <div class="search-row"><span>⌕</span><input placeholder="@T("Search assets…", "Assets suchen…")" @bind="assetSearch" @bind:event="oninput" /></div>
+            <div class="filter-row">
+                <select @bind="roleFilter"><option value="">@T("All standard categories", "Alle Standard-Rubriken")</option>@foreach (var role in Enum.GetValues<AssetRole>()) { <option value="@role">@RoleLabel(role)</option> }</select>
+            </div>
+            @if (selectedAssetIds.Count > 0)
+            {
+                <div class="asset-selection-bar"><strong>@selectedAssetIds.Count.ToString("N0") @T("selected", "ausgewählt")</strong><button @onclick="ClearAssetSelection">@T("Clear", "Leeren")</button><button class="remove-selected" @onclick="RemoveSelectedAssets">@T("Delete", "Löschen")</button><div class="category-assignment"><input placeholder="@T("Category, e.g. Beach", "Rubrik, z. B. Strand")" @bind="newCategoryName" @bind:event="oninput" /><button @onclick="AssignCategory">@T("Set category", "Rubrik setzen")</button></div></div>
+            }
+            <div class="asset-scroll">
+                @foreach (var category in VisibleAssets.GroupBy(a => string.IsNullOrWhiteSpace(a.Category) ? T("General", "Allgemein") : LocalizedCategory(a.Category)).OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+                {
+                    <section class="asset-category">
+                        <div class="category-title"><span>▾</span><strong>@category.Key</strong><small>@category.Count().ToString("N0")</small></div>
+                        @foreach (var roleGroup in category.GroupBy(a => a.Role).OrderBy(g => g.Key.ToString()))
+                        {
+                            <div class="asset-group">
+                                <div class="group-title"><span>@RoleLabel(roleGroup.Key)</span><span>@roleGroup.Count()</span></div>
+                                <div class="asset-grid">
+                                    @foreach (var asset in roleGroup)
+                                    {
+                                        <article class="asset-card @(asset.Excluded ? "excluded" : "") @(selectedAssetIds.Contains(asset.Id) ? "selected" : "") @(brushAssetId == asset.Id ? "brush" : "")" draggable="true" data-drag-asset="@asset.Id" @key="asset.Id" title="@asset.RelativePath · @asset.Width×@asset.Height · @LocalizedClassificationSource(asset.ClassificationSource)">
+                                            <div class="sprite-wrap" @onclick="() => SelectBrush(asset)"><input class="asset-select" type="checkbox" aria-label="@T("Select", "Auswählen") @asset.FileName" checked="@selectedAssetIds.Contains(asset.Id)" @onchange="e => ToggleAssetSelection(asset.Id, (bool)(e.Value ?? false))" @onclick:stopPropagation="true" /><button class="asset-remove" title="@T("Remove", "Entfernen") @asset.FileName" aria-label="@T("Remove", "Entfernen") @asset.FileName" @onclick="() => RemoveAsset(asset)" @onclick:stopPropagation="true">×</button><img src="@asset.Url" alt="@asset.FileName" loading="lazy" /><span class="confidence">@(brushAssetId == asset.Id ? T("SELECTED", "AUSGEWÄHLT") : $"{Math.Round(asset.Confidence * 100)}%")</span></div>
+                                            <div class="asset-name">@asset.FileName</div>
+                                            <select value="@asset.Role" @onchange="e => ChangeRole(asset, e)">@foreach (var role in Enum.GetValues<AssetRole>()) { <option value="@role">@RoleLabel(role)</option> }</select>
+                                            <label class="exclude-check"><input type="checkbox" checked="@asset.Excluded" @onchange="e => State.SetExcluded(asset, (bool)(e.Value ?? false))" /> @T("exclude", "ausschließen")</label>
+                                        </article>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </section>
+                }
+                @if (FilteredAssetCount > visibleAssetLimit) { <button class="button full load-assets" @onclick="ShowMoreAssets">@T("Show", "Weitere") @Math.Min(AssetPageSize, FilteredAssetCount - visibleAssetLimit).ToString("N0") @T("more", "anzeigen") · @FilteredAssetCount.ToString("N0") @T("total", "gesamt")</button> }
+            </div>
+        </aside>
+
+        <section class="workspace panel @(promptCollapsed ? "prompt-collapsed" : "")">
+            <div class="workspace-tabs" role="toolbar" aria-label="@T("Canvas tools", "Canvas-Werkzeuge")">
+                <div class="canvas-tools">
+                    <button class="tool-button @(editorTool == "pan" ? "active" : "")" @onclick='() => SetEditorTool("pan")' title="@T("Pan canvas", "Canvas verschieben")">✋ @T("Hand", "Hand")</button>
+                    <button class="tool-button @(editorTool == "draw" ? "active" : "")" @onclick='() => SetEditorTool("draw")' title="@T("Activate drawing mode and select a sprite", "Zeichenmodus aktivieren und Sprite wählen")">✎ @T("Draw", "Zeichnen")</button>
+                    <button class="tool-button @(editorTool == "erase" ? "active" : "")" @onclick='() => SetEditorTool("erase")' title="@T("Remove elements from the active layer", "Elemente auf der aktiven Ebene entfernen")">⌫ @T("Eraser", "Radierer")</button>
+                    <button class="tool-button @(showGrid ? "active" : "")" @onclick="ToggleGrid">@T("Grid", "Raster")</button>
+                    <button class="tool-button snap-elements @(snapElementsToGrid ? "active" : "")" @onclick="ToggleElementSnap" aria-pressed="@snapElementsToGrid" title="@T("Toggle grid snapping for elements. Floor and wall always stay snapped.", "Rasterfang für Elemente umschalten. Boden und Wand bleiben immer eingerastet.")"><span class="material-symbols-rounded world-tool-icon">@(snapElementsToGrid ? "grid_4x4" : "grid_off")</span>@(snapElementsToGrid ? T("Elements snap", "Elemente rasten") : T("Elements free", "Elemente frei"))</button>
+                    <button class="tool-button light-tool @(worldLightingEnabled && editorTool == "light-cursor" ? "active" : "")" @onclick="ToggleWorldCursorLight" title="@T("Use the cursor as a movable light", "Cursor als bewegliches Licht verwenden")"><span class="material-symbols-rounded world-tool-icon">light_mode</span>@T("Cursor light", "Cursor-Licht")</button>
+                    <button class="tool-button light-tool @(editorTool == "light-place" ? "active" : "")" @onclick="ActivateWorldLightPlacement" title="@T("Place or remove lights on the grid", "Lichter auf dem Raster platzieren oder entfernen")"><span class="material-symbols-rounded world-tool-icon">add_circle</span>@T("Place light", "Licht setzen")</button>
+                    <button class="tool-button light-clear" @onclick="DisableWorldLighting" title="@T("Turn off lighting and show the world normally", "Beleuchtung ausschalten und Welt normal anzeigen")"><span class="material-symbols-rounded world-tool-icon">light_off</span></button>
+                    <button class="tool-button" @onclick="ZoomOut" title="@T("Zoom out toward the last pointer position", "Zur letzten Mausposition herauszoomen")">−</button><span>@Math.Round(zoom * 100)%</span><button class="tool-button" @onclick="ZoomIn" title="@T("Zoom in toward the last pointer position", "Zur letzten Mausposition hineinzoomen")">＋</button>
+                    <button class="tool-button" @onclick="FitCanvas">@T("Fit", "Einpassen")</button>
+                    <span class="world-toolbar-divider"></span>
+                    <button class="tool-button world-action @(!layersCollapsed ? "active" : "")" @onclick="ToggleLayers" title="@T("Toggle world layers", "Welt-Ebenen ein- oder ausblenden")">▤ @T("Layers", "Ebenen")</button>
+                    <button class="tool-button world-action" @onclick="OpenWorldExportDialog" disabled="@(State.World is null)" title="@T("Export world", "Welt exportieren")">⇩ @T("Export", "Export")</button>
+                </div>
+            </div>
+
+            <div class="workspace-content">
+                <div class="canvas-stage @(activeTab == "Playtest" ? "play-mode" : "") tool-@editorTool">
+                    <canvas id="worldCanvas" tabindex="0" aria-label="@T("Generated playable world", "Generierte spielbare Welt")"></canvas>
+                    @if (editorTool == "draw" && BrushAsset is not null) { <div class="brush-badge"><img src="@BrushAsset.Url" alt="" /><span><strong>@T("Drawing", "Zeichnen")</strong>@BrushAsset.FileName</span></div> }
+                    else if (editorTool == "draw") { <div class="brush-badge brush-empty"><span><strong>@T("Drawing mode active", "Zeichenmodus aktiv")</strong>@T("Select a sprite from the library", "Sprite in der Bibliothek auswählen")</span></div> }
+                    @if (State.World is null) { <div class="empty-state"><div class="empty-icon">◇</div><h2>@T("Your world starts here", "Deine Welt beginnt hier")</h2><p>@T("Import sprites or use the original demo pack, then generate a playable level.", "Importiere Sprites oder nutze das Demo-Paket und generiere anschließend ein spielbares Level.")</p><button class="button primary" @onclick="() => State.GenerateAsync(false)" disabled="@(!State.HasOpenProject)">@T("Generate demo world", "Demo-Welt generieren")</button></div> }
+                    else
+                    {
+                        <div class="canvas-badge">Seed @State.World.Seed · @State.World.Width×@State.World.Height · @State.World.Regions.Count @WorldRegionLabel</div>
+                        @if (activeTab == "Playtest") { <div class="playtest-badge"><strong>@T("PLAYTEST ACTIVE", "TESTLAUF AKTIV")</strong><span>@T("WASD / arrow keys", "WASD / Pfeiltasten")</span></div> }
+                        <div class="minimap"><canvas id="miniCanvas"></canvas></div>
+                        <div class="play-overlay canvas-playtest-controls">
+                            <strong>@T("PLAYTEST", "TESTLAUF")</strong><span>@(activeTab == "Playtest" ? T("WASD / arrow keys", "WASD / Pfeiltasten") : T("Try the world directly", "Welt direkt ausprobieren"))</span>
+                            <button @onclick="StartIntegratedPlaytest" disabled="@(activeTab == "Playtest")">▶ @T("Start", "Starten")</button>
+                            <button @onclick="ResetPlayer" disabled="@(activeTab != "Playtest")">↺ @T("Reset", "Zurücksetzen")</button>
+                            <button @onclick="StopIntegratedPlaytest" disabled="@(activeTab != "Playtest")">■ @T("Stop", "Stoppen")</button>
+                        </div>
+                    }
+                    @if (activeTab != "Playtest")
+                    {
+                        <button class="world-ai-launch @(!promptCollapsed ? "active" : "")" @onclick="TogglePrompt" aria-expanded="@(!promptCollapsed)" disabled="@(!Credentials.IsReady)" title="@(Credentials.IsReady ? T("Describe and generate the world with AI", "Welt mit KI beschreiben und generieren") : T("Add a valid API key in Settings first", "Zuerst einen gültigen API-Schlüssel in den Einstellungen hinterlegen"))">
+                            <span class="material-symbols-rounded">auto_awesome</span>
+                            <strong>AI</strong>
+                        </button>
+                    }
+                    @if (worldLightingEnabled && editorTool is "light-cursor" or "light-place")
+                    {
+                        <aside class="world-light-settings panel" aria-label="@T("Light settings", "Lichteinstellungen")">
+                            <header><div><span class="material-symbols-rounded">light_mode</span><strong>@T("Light", "Licht")</strong></div><button aria-label="@T("Close light settings", "Lichteinstellungen schließen")" @onclick="DisableWorldLighting">×</button></header>
+                            <label><span>@T("Intensity", "Intensität")</span><output>@worldLightIntensity.ToString("0.0")</output><input type="range" min="0.1" max="3" step="0.1" value="@worldLightIntensity" @oninput="ChangeWorldLightIntensity" /></label>
+                            <label><span>@T("Range", "Reichweite")</span><output>@worldLightRange.ToString("0")</output><input type="range" min="3" max="24" step="1" value="@worldLightRange" @oninput="ChangeWorldLightRange" /></label>
+                            <label class="world-light-color"><span>@T("Light color", "Lichtfarbe")</span><output>@worldLightColor.ToUpperInvariant()</output><input type="color" value="@worldLightColor" @oninput="ChangeWorldLightColor" /></label>
+                            <small>@(editorTool == "light-cursor" ? T("Move the pointer freely over the world.", "Bewege den Cursor stufenlos über die Welt.") : T("Click to place a light; click near it to remove it.", "Klicke zum Setzen; klicke nahe am Licht zum Entfernen."))</small>
+                        </aside>
+                    }
+                </div>
+            </div>
+
+            @if (showBlueprintDialog)
+            {
+                <section class="canvas-dialog panel design-intent-dialog" role="dialog" data-close-on-outside="true" aria-label="@T("Versioned Design Intent", "Versionierte Designabsicht")">
+                    <div class="canvas-dialog-heading"><div><span class="eyebrow">@T("VERSIONED DESIGN INTENT", "VERSIONIERTE DESIGNABSICHT")</span><h2>@(State.Blueprint is null ? T("No blueprint", "Kein Entwurf") : LocalizedBlueprintText(State.Blueprint.Theme))</h2></div><div><span class="schema-badge">@T("schema", "Schema") @(State.Blueprint?.SchemaVersion ?? "—")</span><button class="icon-button" aria-label="@T("Close design intent", "Designabsicht schließen")" @onclick="() => showBlueprintDialog = false">×</button></div></div>
+                    <div class="canvas-dialog-body">
+                        @if (State.Blueprint is not null)
+                        {
+                            <div class="blueprint-graph">@foreach (var region in State.Blueprint.Regions) { <div class="region-node"><span>@LocalizedBlueprintText(region.Size)</span><strong>@LocalizedBlueprintText(region.Name)</strong><small>@LocalizedBlueprintText(region.Purpose)</small></div> }</div>
+                            <pre>@JsonSerializer.Serialize(State.Blueprint, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true })</pre>
+                        }
+                    </div>
+                </section>
+            }
+
+            @if (showChecksDialog)
+            {
+                <section class="canvas-dialog panel checks-dialog" role="dialog" data-close-on-outside="true" aria-label="@T("Independent Engine Checks", "Unabhängige Engine-Prüfungen")">
+                    <div class="canvas-dialog-heading"><div><span class="eyebrow">@T("INDEPENDENT ENGINE CHECKS", "UNABHÄNGIGE ENGINE-PRÜFUNGEN")</span><h2>@(State.Validation?.IsValid == true ? T("World is playable", "Die Welt ist spielbar") : T("Validation needs attention", "Die Prüfung benötigt Aufmerksamkeit"))</h2></div><button class="icon-button" aria-label="@T("Close engine checks", "Engine-Prüfungen schließen")" @onclick="() => showChecksDialog = false">×</button></div>
+                    <div class="canvas-dialog-body">
+                        <div class="validation-hero @(State.Validation?.IsValid == true ? "valid" : "invalid")"><div class="validation-orb">@(State.Validation?.IsValid == true ? "✓" : "!")</div><div><h2>@(State.Validation?.IsValid == true ? T("All checks passed", "Alle Prüfungen bestanden") : T("Checks need attention", "Prüfungen benötigen Aufmerksamkeit"))</h2><p>@T("Deterministic checks validate the concrete tile map without GPT.", "Deterministische Prüfungen validieren die konkrete Tilemap ohne GPT.")</p></div><button class="button" @onclick="State.ValidateAsync">@T("Run again", "Neu prüfen")</button></div>
+                        <div class="check-list">@if (State.Validation is not null) { @foreach (var issue in State.Validation.Issues) { <div class="check-item @(issue.Passed ? "passed" : issue.Severity.ToString().ToLowerInvariant())"><span>@(issue.Passed ? "✓" : "!")</span><div><strong>@issue.CheckId</strong><p>@Localizer.ValidationMessage(issue)</p></div>@if (issue.RepairAvailable) { <em>@T("Auto-repair", "Auto-Reparatur")</em> }</div> } }</div>
+                    </div>
+                </section>
+            }
+
+            <div class="prompt-dock">
+                <div class="prompt-copy"><span class="eyebrow">@T("DESCRIBE YOUR WORLD", "BESCHREIBE DEINE WELT")</span><p>@T("First choose the kind of space. The AI then creates connected rooms or outdoor regions.", "Wähle zuerst die Art der Umgebung. Die KI erstellt daraus verbundene Räume oder Außengebiete.")</p><div class="world-kind-picker" role="group" aria-label="@T("World type", "Welttyp")"><button aria-pressed="@(State.WorldEnvironment == "Dungeon" ? "true" : "false")" class="@(State.WorldEnvironment == "Dungeon" ? "active" : "")" @onclick='() => SetWorldEnvironment("Dungeon")'><strong>▦ @T("Dungeon", "Dungeon")</strong><small>@T("Rooms and corridors", "Räume und Korridore")</small></button><button aria-pressed="@(State.WorldEnvironment == "Interior" ? "true" : "false")" class="@(State.WorldEnvironment == "Interior" ? "active" : "")" @onclick='() => SetWorldEnvironment("Interior")'><strong>⌂ @T("Interior", "Innenraum")</strong><small>@T("House, office, rooms", "Haus, Büro, Zimmer")</small></button><button aria-pressed="@(State.WorldEnvironment == "Overworld" ? "true" : "false")" class="@(State.WorldEnvironment == "Overworld" ? "active" : "")" @onclick='() => SetWorldEnvironment("Overworld")'><strong>♧ @T("Overworld", "Oberwelt")</strong><small>@T("Forest, city, outdoors", "Wald, Stadt, draußen")</small></button></div><textarea @bind="State.Prompt" @bind:event="oninput" @bind:after="ScheduleAutoSave" placeholder="@T("Describe rooms or regions, flow, landmarks and pacing…", "Beschreibe Räume oder Gebiete, Verlauf, Landmarken und Tempo…")"></textarea><div class="prompt-chips">@foreach (var chip in WorldPromptChips) { <button @onclick="() => AddPrompt(chip.Value)">@chip.Prefix @chip.Label</button> }</div></div>
+                <div class="generation-actions"><button class="button primary generate" @onclick="() => State.GenerateAsync(true)" disabled="@(!Credentials.IsReady || State.IsBusy || !State.HasOpenProject)">✦ @T("Generate world", "Welt generieren")</button><button class="button" @onclick="State.ImproveAsync" disabled="@(!Credentials.IsReady || State.IsBusy || !State.HasOpenProject || State.Blueprint is null)">↻ @T("Improve (feedback)", "Verbessern (Rückmeldung)")</button><div class="inline-feedback"><input @bind="State.Feedback" @bind:event="oninput" @bind:after="ScheduleAutoSave" placeholder="@T("Too linear, too empty…", "Zu linear, zu leer…")" /></div><div class="generation-status"><span class="status-dot @(State.IsBusy ? "busy" : "online")"></span>@StatusText(State.Status)</div></div>
+            </div>
+        </section>
+
+        <aside class="inspector-column">
+            <section class="panel layer-panel @(layersCollapsed ? "panel-collapsed" : "")">
+                <div class="panel-heading"><div><span class="eyebrow">@T("LAYERS", "EBENEN")</span><strong>@(State.World?.Layers.Count ?? 0) @T("drawing layers", "Zeichenebenen")</strong></div><div class="panel-controls"><button class="tiny-button" title="@T("Add layer", "Ebene hinzufügen")" @onclick="State.AddLayer" disabled="@(State.World is null)">＋</button><button class="tiny-button" title="@T("Minimize", "Minimieren")" @onclick="() => layersCollapsed = true">—</button></div></div>
+                <div class="layer-list">
+                    @if (State.World is not null)
+                    {
+                        @foreach (var layer in State.World.Layers.OrderByDescending(layer => layer.Order))
+                        {
+                            <div class="layer-row @(State.ActiveLayerId == layer.Id ? "active" : "")" @key="layer.Id">
+                                <button class="layer-eye" title="@T("Visibility", "Sichtbarkeit")" @onclick="() => State.ToggleLayerVisibility(layer.Id)">@(layer.Visible ? "◉" : "○")</button>
+                                <div class="layer-main" @onclick="() => State.SetActiveLayer(layer.Id)"><input value="@LocalizedLayerName(layer)" readonly="@layer.Locked" aria-label="@T("Rename layer", "Ebene umbenennen") @LocalizedLayerName(layer)" @oninput="e => State.RenameLayer(layer.Id, e.Value?.ToString() ?? string.Empty)" @onclick:stopPropagation="true" /><small>@LayerPurposeLabel(layer) · @layer.Placements.Count.ToString("N0") @T("elements", "Elemente") @(State.ActiveLayerId == layer.Id ? T("· ACTIVE", "· AKTIV") : "")</small></div>
+                                <button title="@(layer.Locked ? T("Unlock layer", "Ebene entsperren") : T("Lock layer", "Ebene sperren"))" @onclick="() => State.ToggleLayerLock(layer.Id)">@(layer.Locked ? "🔒" : "🔓")</button>
+                                <button title="@T("Bring forward", "Nach vorne")" disabled="@(!CanMoveLayer(layer, 1))" @onclick="() => State.MoveLayer(layer.Id, 1)">↑</button><button title="@T("Send backward", "Nach hinten")" disabled="@(!CanMoveLayer(layer, -1))" @onclick="() => State.MoveLayer(layer.Id, -1)">↓</button>
+                                <button class="layer-delete" title="@T("Delete layer", "Ebene löschen")" disabled="@(layer.Generated || layer.Locked)" @onclick="() => RemoveLayer(layer)">×</button>
+                            </div>
+                        }
+                    }
+                    <div class="base-layer"><span>▦</span><div><strong>@T("Generated world", "Generierte Welt")</strong><small>@T("Base · always locked", "Basis · immer gesperrt")</small></div><span>🔒</span></div>
+                </div>
+            </section>
+        </aside>
+    </main>
+
+    @if (State.Error is not null) { <div class="toast error-toast"><span>!</span><div><strong>@T("Action completed with a note", "Aktion mit Hinweis abgeschlossen")</strong><p>@ErrorText(State.Error)</p></div><button @onclick="State.ClearError">×</button></div> }
+    @if (State.IsBusy) { <div class="busy-line"></div> }
+</div>
+
+@if (showOnboarding)
+{
+    <div class="modal-backdrop onboarding-backdrop">
+        <div class="settings-modal panel onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+            <div class="onboarding-hero"><img class="onboarding-logo" src="/sprite2world-logo.png" alt="Sprite2World" width="450" height="154" style="display:block;width:450px;max-width:90%;height:154px;object-fit:contain;margin:0 0 2px" /><span class="eyebrow">@T("WELCOME", "WILLKOMMEN")</span><h2 id="onboarding-title">@T("Build your first world", "Baue deine erste Welt")</h2><p>@T("Choose your language and connect your own OpenAI API key. The editor remains usable without AI.", "Wähle deine Sprache und verbinde deinen eigenen OpenAI-API-Schlüssel. Der Editor bleibt auch ohne KI nutzbar.")</p></div>
+            <section><h3>@T("Language", "Sprache")</h3><div class="onboarding-language"><button class="@(Localizer.Language == "en" ? "active" : "")" @onclick='() => SetOnboardingLanguage("en")'>English</button><button class="@(Localizer.Language == "de" ? "active" : "")" @onclick='() => SetOnboardingLanguage("de")'>Deutsch</button></div></section>
+            <section class="credential-section"><h3>@T("Connect OpenAI", "OpenAI verbinden")</h3><label>@T("API key", "API-Schlüssel")<input type="password" autocomplete="new-password" spellcheck="false" @bind="apiKeyInput" @bind:event="oninput" placeholder="sk-…" /></label><p class="credential-privacy"><span class="material-symbols-rounded">shield_lock</span>@T("Your key is validated directly with OpenAI. Only an encrypted token is stored in this browser; the key is never written into the app or project files.", "Dein Schlüssel wird direkt bei OpenAI geprüft. In diesem Browser wird nur ein verschlüsseltes Token gespeichert; der Schlüssel wird nie in die App oder Projektdateien geschrieben.")</p>@if (!string.IsNullOrWhiteSpace(apiKeyMessage)) { <p class="credential-result @(apiKeyHasError ? "error" : "success")">@apiKeyMessage</p> }</section>
+            <div class="onboarding-actions"><button class="button" @onclick="ContinueWithoutAi" disabled="@validatingApiKey">@(Credentials.IsReady ? T("Open Sprite2World", "Sprite2World öffnen") : T("Continue without AI", "Ohne KI fortfahren"))</button><button class="button primary" @onclick="ValidateApiKey" disabled="@(validatingApiKey || string.IsNullOrWhiteSpace(apiKeyInput))">@(validatingApiKey ? T("Checking…", "Wird geprüft…") : Credentials.IsReady ? T("Test another key", "Anderen Schlüssel testen") : T("Check and continue", "Prüfen und fortfahren"))</button></div>
+        </div>
+    </div>
+}
+
+@if (showSettings)
+{
+    <div class="modal-backdrop settings-backdrop" @onclick="() => showSettings = false"><div class="settings-modal panel" role="dialog" aria-modal="true" aria-label="@T("Settings", "Einstellungen")" tabindex="-1" @onkeydown="e => CloseOnEscape(e, () => showSettings = false)" @onclick:stopPropagation="true">
+        <div class="modal-heading"><div><span class="eyebrow">@T("SETTINGS", "EINSTELLUNGEN")</span><h2>Sprite2World</h2></div><button class="icon-button" aria-label="@T("Close settings", "Einstellungen schließen")" @onclick="() => showSettings = false">×</button></div>
+        <section><h3>@T("Language", "Sprache")</h3><label>@T("Interface language", "Oberflächensprache")<select value="@Localizer.Language" @onchange="ChangeLanguage"><option value="en">English</option><option value="de">Deutsch</option></select></label><p class="settings-note">@T("English is the default language. Your selection is saved in this browser.", "Englisch ist die Standardsprache. Deine Auswahl wird in diesem Browser gespeichert.")</p></section>
+        <section class="credential-section"><h3>OpenAI</h3><div class="credential-status"><span class="status-dot @(Credentials.IsReady ? "online" : "offline")"></span><strong>@(Credentials.IsReady ? T("AI ready", "KI bereit") : T("AI locked", "KI gesperrt"))</strong><span>@T(Credentials.Status, Credentials.Status switch { "OpenAI connected" => "OpenAI verbunden", "No API key configured" => "Kein API-Schlüssel hinterlegt", _ => Credentials.Status })</span></div><label>@T(Credentials.IsReady ? "API key securely stored · enter only to replace" : "API key", Credentials.IsReady ? "API-Schlüssel sicher gespeichert · nur zum Ersetzen eingeben" : "API-Schlüssel")<input type="password" autocomplete="new-password" spellcheck="false" @bind="apiKeyInput" @bind:event="oninput" placeholder="@(Credentials.IsReady ? T("•••••••••••• · securely stored", "•••••••••••• · sicher gespeichert") : "sk-…")" /></label><div class="credential-actions"><button class="button primary" @onclick="ValidateApiKey" disabled="@(validatingApiKey || string.IsNullOrWhiteSpace(apiKeyInput))">@(validatingApiKey ? T("Checking…", "Wird geprüft…") : T("Validate key", "Schlüssel prüfen"))</button>@if (Credentials.IsReady) { <button class="button danger" @onclick="RemoveApiKey" disabled="@validatingApiKey">@T("Remove key", "Schlüssel entfernen")</button> }</div>@if (!string.IsNullOrWhiteSpace(apiKeyMessage)) { <p class="credential-result @(apiKeyHasError ? "error" : "success")">@apiKeyMessage</p> }<p class="settings-note">@T("For security, the saved key is never shown in plaintext. The masked field confirms that it is connected.", "Aus Sicherheitsgründen wird der gespeicherte Schlüssel nie im Klartext angezeigt. Das maskierte Feld bestätigt die Verbindung.")</p><label>@T("Model", "Modell")<OpenAiModelSelect Value="@State.Model" ValueChanged="ChangeModel" CssClass="settings-model-select" Language="@Localizer.Language" /></label><label>@T("Reasoning effort", "Denkaufwand")<select @bind="State.ReasoningEffort" @bind:after="ScheduleAutoSave"><option value="low">@T("Low", "Niedrig")</option><option value="medium">@T("Medium", "Mittel")</option><option value="high">@T("High", "Hoch")</option></select></label><p class="settings-note">@T("GPT-5.6 Luna is preselected for cost-sensitive testing. Terra and Sol remain available for higher quality requirements.", "GPT-5.6 Luna ist für kostensensitive Tests vorausgewählt. Terra und Sol bleiben für höhere Qualitätsanforderungen verfügbar.")</p></section>
+        <section><h3>@T("Display", "Anzeige")</h3><label class="switch-row">@T("Show grid", "Raster anzeigen")<input type="checkbox" @bind="showGrid" @bind:after="ApplyDisplaySettings" /></label><label>@T("Default zoom", "Standard-Zoom")<input type="range" min="0.5" max="2" step="0.1" @bind="zoom" @bind:after="ApplyDisplaySettings" /></label></section>
+        <section><h3>@T("Storage", "Speicher")</h3><p>@T("Projects persist in the named Docker volume at", "Projekte werden dauerhaft im benannten Docker-Volume gespeichert unter") <code>/app/data</code>.</p><button class="button danger" @onclick="NewProject">@T("Reset current project", "Aktuelles Projekt zurücksetzen")</button></section>
+        <button class="button primary full" @onclick="() => showSettings = false">@T("Done", "Fertig")</button>
+    </div></div>
+}
+
+@if (showWorldSetupDialog)
+{
+    <div class="modal-backdrop" @onclick="() => showWorldSetupDialog = false">
+        <div class="settings-modal panel world-setup-modal" role="dialog" aria-modal="true" aria-labelledby="world-setup-title" @onkeydown="HandleWorldSetupKey" @onclick:stopPropagation="true">
+            <div class="modal-heading"><div><span class="eyebrow">@T("NEW WORLD", "NEUE WELT")</span><h2 id="world-setup-title">@T("Choose the world before generating", "Welt vor dem Generieren festlegen")</h2></div><button class="icon-button" aria-label="@T("Close", "Schließen")" @onclick="() => showWorldSetupDialog = false">×</button></div>
+            <section><label>@T("Name", "Name")<input @bind="newProjectName" @bind:event="oninput" maxlength="80" /></label><div class="world-kind-picker setup-picker" role="group" aria-label="@T("World type", "Welttyp")">@foreach (var kind in new[] { "Dungeon", "Interior", "Overworld" }) { <button aria-pressed="@(newWorldEnvironment == kind ? "true" : "false")" class="@(newWorldEnvironment == kind ? "active" : "")" @onclick="() => SetNewWorldEnvironment(kind)"><strong>@kind</strong><small>@WorldKindDescription(kind)</small></button> }</div><label>@T("Initial idea", "Erste Idee")<textarea @bind="newWorldPrompt" @bind:event="oninput" maxlength="800"></textarea></label><p class="settings-note">@T("Nothing is generated until you confirm. You can refine this description again in the world editor.", "Vor der Bestätigung wird nichts generiert. Du kannst die Beschreibung anschließend im Welteditor weiter verfeinern.")</p></section>
+            <button class="button primary full" @onclick="ConfirmNewProject" disabled="@(string.IsNullOrWhiteSpace(newProjectName) || string.IsNullOrWhiteSpace(newWorldPrompt))">@T("Create world workspace", "Welt-Arbeitsbereich anlegen")</button>
+        </div>
+    </div>
+}
+
+@if (showProjects)
+{
+    <div class="modal-backdrop" @onclick="() => showProjects = false">
+        <div class="settings-modal panel project-modal" role="dialog" aria-modal="true" aria-label="@T("Project management", "Projektverwaltung")" tabindex="-1" @onkeydown="e => CloseOnEscape(e, () => showProjects = false)" @onclick:stopPropagation="true">
+            <div class="modal-heading"><div><span class="eyebrow">@T("PROJECTS", "PROJEKTE")</span><h2>@T("Project management", "Projektverwaltung")</h2></div><button class="icon-button" aria-label="@T("Close project management", "Projektverwaltung schließen")" @onclick="() => showProjects = false">×</button></div>
+            <div class="project-actions">
+                <div class="project-create"><input aria-label="@T("New project name", "Name des neuen Projekts")" placeholder="@T("Project name", "Projektname")" @bind="newProjectName" @bind:event="oninput" /><button class="button primary" @onclick="NewProject">＋ @T("Create", "Erstellen")</button></div>
+                <button class="button" @onclick="CloseCurrentProject" disabled="@(!State.HasOpenProject || State.IsBusy)">× @T("Close", "Schließen")</button>
+            </div>
+            <div class="autosave-note"><span class="status-dot online"></span>@T("Changes are saved automatically.", "Änderungen werden automatisch gespeichert.")</div>
+            <div class="current-project"><span class="status-dot @(State.HasOpenProject ? "online" : "offline")"></span><div><small>@T("CURRENT", "AKTUELL")</small><strong>@LocalizedProjectName(State.ProjectName)</strong></div></div>
+            <div class="saved-projects">
+                @if (projectList.Count == 0) { <p class="empty-copy">@T("No saved projects yet.", "Noch keine gespeicherten Projekte.")</p> }
+                @foreach (var project in projectList)
+                {
+                    <div class="saved-project-row @(State.HasOpenProject && project.Id == State.ProjectId ? "current" : "")">
+                        <span class="project-glyph">◇</span><div class="project-copy"><strong>@LocalizedProjectName(project.Name)</strong><small>@LocalizedDate(project.UpdatedAt) · @project.Id</small></div>
+                        <button class="button compact" @onclick="() => LoadProject(project.Id)">@T("Open", "Öffnen")</button>
+                        <button class="button compact danger" aria-label="@T("Delete project", "Projekt löschen") @LocalizedProjectName(project.Name)" @onclick="() => DeleteProject(project)">@T("Delete", "Löschen")</button>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@if (showExportDialog)
+{
+    <div class="modal-backdrop" @onclick="() => showExportDialog = false">
+        <div class="settings-modal panel export-modal" role="dialog" aria-modal="true" aria-label="@T("Export", "Export")" tabindex="-1" @onkeydown="e => CloseOnEscape(e, () => showExportDialog = false)" @onclick:stopPropagation="true">
+            <div class="modal-heading"><div><span class="eyebrow">@(exportSprite ? T("SPRITE EXPORT", "SPRITE-EXPORT") : T("WORLD EXPORT", "WELT-EXPORT"))</span><h2>@(exportSprite ? StudioAsset?.FileName : LocalizedProjectName(State.ProjectName))</h2></div><button class="icon-button" aria-label="@T("Close export", "Export schließen")" @onclick="() => showExportDialog = false">×</button></div>
+            @if (!exportSprite)
+            {
+                <label class="export-layer-toggle"><span><strong>@T("Export layers separately", "Ebenen einzeln exportieren")</strong><small>@T("Creates one complete material set for the generated base and every world layer.", "Erstellt einen vollständigen Materialsatz für die generierte Basis und jede Weltebene.")</small></span><input type="checkbox" @bind="exportWorldLayersSeparately" /></label>
+            }
+            <div class="export-options material-export-grid">
+                @if (exportSprite)
+                {
+                    <button class="export-option channel-base" @onclick="() => ExportSpriteMaterial(MaterialChannel.Base)" disabled="@(StudioAsset is null)"><span class="material-symbols-rounded">image</span><div><strong>Base PNG</strong><small>@T("Color and transparency", "Farbe und Transparenz")</small></div></button>
+                    <button class="export-option channel-normal" @onclick="() => ExportSpriteMaterial(MaterialChannel.Normal)" disabled="@(StudioAsset is null)"><span class="material-symbols-rounded">deployed_code</span><div><strong>Normal Map PNG</strong><small>@T("Surface direction", "Oberflächenrichtung")</small></div></button>
+                    <button class="export-option channel-roughness" @onclick="() => ExportSpriteMaterial(MaterialChannel.Roughness)" disabled="@(StudioAsset is null)"><span class="material-symbols-rounded">blur_on</span><div><strong>Roughness PNG</strong><small>@T("Matte or glossy surface", "Matte oder glänzende Oberfläche")</small></div></button>
+                    <button class="export-option channel-metallic" @onclick="() => ExportSpriteMaterial(MaterialChannel.Metallic)" disabled="@(StudioAsset is null)"><span class="material-symbols-rounded">brightness_6</span><div><strong>Metallic PNG</strong><small>@T("Metal influence", "Metallischer Einfluss")</small></div></button>
+                    <button class="export-option export-package" @onclick="ExportSpriteMaterialZip" disabled="@(StudioAsset is null)"><span class="material-symbols-rounded">folder_zip</span><div><strong>@T("All materials as ZIP", "Alle Materialien als ZIP")</strong><small>@T("Base, Normal, Roughness and Metallic", "Base, Normal, Roughness und Metallic")</small></div></button>
+                }
+                else
+                {
+                    <button class="export-option channel-base" @onclick="() => ExportWorldMaterial(MaterialChannel.Base)" disabled="@(State.World is null)"><span class="material-symbols-rounded">image</span><div><strong>Base PNG</strong><small>@T("Complete world color map", "Vollständige Farbkarte der Welt")</small></div></button>
+                    <button class="export-option channel-normal" @onclick="() => ExportWorldMaterial(MaterialChannel.Normal)" disabled="@(State.World is null)"><span class="material-symbols-rounded">deployed_code</span><div><strong>Normal Map PNG</strong><small>@T("Combined surface directions", "Kombinierte Oberflächenrichtungen")</small></div></button>
+                    <button class="export-option channel-roughness" @onclick="() => ExportWorldMaterial(MaterialChannel.Roughness)" disabled="@(State.World is null)"><span class="material-symbols-rounded">blur_on</span><div><strong>Roughness PNG</strong><small>@T("Combined roughness map", "Kombinierte Rauheitskarte")</small></div></button>
+                    <button class="export-option channel-metallic" @onclick="() => ExportWorldMaterial(MaterialChannel.Metallic)" disabled="@(State.World is null)"><span class="material-symbols-rounded">brightness_6</span><div><strong>Metallic PNG</strong><small>@T("Combined metallic map", "Kombinierte Metallic-Karte")</small></div></button>
+                    <button class="export-option export-package" @onclick="ExportWorldMaterialZip" disabled="@(State.World is null)"><span class="material-symbols-rounded">folder_zip</span><div><strong>@T("All materials as ZIP", "Alle Materialien als ZIP")</strong><small>@(exportWorldLayersSeparately ? T("Four maps for every layer", "Vier Maps für jede Ebene") : T("Four combined world maps", "Vier kombinierte Welt-Maps"))</small></div></button>
+                    <button class="export-option export-json" @onclick="ExportJson" disabled="@(State.World is null)"><span class="material-symbols-rounded">data_object</span><div><strong>@T("World project JSON", "Weltprojekt als JSON")</strong><small>@T("Blueprint, assets and validation data", "Entwurf, Assets und Validierungsdaten")</small></div></button>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private string activeTab = "World Preview";
+    private string assetSearch = "";
+    private string roleFilter = "";
+    private string newCategoryName = "";
+    private string newProjectName = "New Project";
+    private bool showWorldSetupDialog;
+    private string newWorldEnvironment = "Dungeon";
+    private string newWorldPrompt = DemoBlueprintFactory.DungeonPrompt;
+    private string editorTool = "pan";
+    private string libraryTab = "projects";
+    private string studioSearch = "";
+    private string normalStatusFilter = "";
+    private string? activeLibraryTheme;
+    private string? activeLibrarySubfolder;
+    private readonly HashSet<string> expandedLibraryThemes = new(StringComparer.OrdinalIgnoreCase);
+    private string? activeAssetMenuId;
+    private string? draggingLibraryAssetId;
+    private string? dragOverLibraryFolder;
+    private bool showCreateFolderDialog;
+    private string newFolderTheme = "";
+    private string newFolderSubfolder = "";
+    private bool showAssetManagerDialog;
+    private string? managedLibraryAssetId;
+    private string assetManagerMode = "rename";
+    private string assetManagerName = "";
+    private string assetManagerTheme = "General";
+    private string assetManagerSubfolder = "Sprites";
+    private string spriteTool = "pencil";
+    private string spriteColor = "#d5d7de";
+    private string spriteSecondaryColor = "#1c222b";
+    private bool showDeletePaletteColorDialog;
+    private string? pendingPaletteColor;
+    private readonly Dictionary<MaterialChannel, List<string>> spritePalettes = [];
+    private MaterialChannel activeMaterialChannel = MaterialChannel.Base;
+    private bool showSpriteSetupDialog;
+    private bool showAiSpriteDialog;
+    private bool aiSpriteDrawing;
+    private string aiProgressStep = "";
+    private string aiProgressDetail = "";
+    private bool aiProgressSpinning;
+    private bool aiProgressFailed;
+    private bool aiSuccessPulse;
+    private bool aiRequestActive;
+    private bool spriteAutosaving;
+    private string aiSpritePrompt = "";
+    private string aiSpriteView = "Auto";
+    private string aiSpriteFraming = "Full subject";
+    private string aiSpriteOutline = "1 px";
+    private string aiSpriteLighting = "Top left";
+    private string aiSpritePaletteHint = "";
+    private GeneratedSprite? aiSpriteCandidate;
+    private CancellationTokenSource? aiSpriteCancellation;
+    private bool spriteSetupImport;
+    private string newSpriteName = "untitled-sprite";
+    private int newSpriteTilesWide = 1;
+    private int newSpriteTilesHigh = 1;
+    private string newSpriteFolderTheme = "Custom";
+    private string newSpriteFolderSubfolder = "Sprites";
+    private string? studioAssetId;
+    private string? brushAssetId;
+    private bool libraryStudioOpen = true;
+    private bool libraryAddOpen;
+    private bool pendingSpriteStudioRender = true;
+    private bool spriteDirty;
+    private bool spriteGrid = true;
+    private int spriteGridSize = 1;
+    private bool spriteSeamlessPreview;
+    private bool spriteLighting = true;
+    private int spriteBrushSize = 1;
+    private double spriteZoom = 1;
+    private bool assetPanelCollapsed = true;
+    private bool assetPanelFloating;
+    private bool layersCollapsed;
+    private bool promptCollapsed = true;
+    private bool showGrid = true;
+    private bool snapElementsToGrid = true;
+    private bool worldLightingEnabled;
+    private double worldLightIntensity = 1;
+    private double worldLightRange = 10;
+    private string worldLightColor = "#ffd36a";
+    private bool showSettings;
+    private bool showOnboarding;
+    private bool validatingApiKey;
+    private bool apiKeyHasError;
+    private string apiKeyInput = "";
+    private string apiKeyMessage = "";
+    private bool showProjects;
+    private bool showBlueprintDialog;
+    private bool showChecksDialog;
+    private bool showExportDialog;
+    private bool exportSprite;
+    private bool exportWorldLayersSeparately;
+    private bool pendingPlayStart;
+    private List<Sprite2World.Contracts.ProjectSummary> projectList = [];
+    private string? selectedLibraryProjectId;
+    private double zoom = 1;
+    private bool pendingCanvasRender = true;
+    private const int MaxUploadFiles = 10_000;
+    private const int ImportBatchSize = 40;
+    private const long MaxUploadFileBytes = 10 * 1024 * 1024;
+    private const int AssetPageSize = 180;
+    private int visibleAssetLimit = AssetPageSize;
+    private readonly HashSet<string> selectedAssetIds = new(StringComparer.Ordinal);
+    private DotNetObjectReference<Home>? dotNetReference;
+    private CancellationTokenSource? autoSaveDebounce;
+    private CancellationTokenSource? spriteAutoSaveDebounce;
+    private IEnumerable<AssetDefinition> FilteredAssets => State.Assets.Where(a => (string.IsNullOrWhiteSpace(assetSearch) || a.FileName.Contains(assetSearch, StringComparison.OrdinalIgnoreCase) || a.RelativePath.Contains(assetSearch, StringComparison.OrdinalIgnoreCase)) && (string.IsNullOrWhiteSpace(roleFilter) || a.Role.ToString() == roleFilter));
+    private IEnumerable<AssetDefinition> VisibleAssets => FilteredAssets.Take(visibleAssetLimit);
+    private int FilteredAssetCount => FilteredAssets.Count();
+    private AssetDefinition? BrushAsset => brushAssetId is null ? null : State.Assets.FirstOrDefault(asset => asset.Id == brushAssetId);
+    private AssetDefinition? StudioAsset => studioAssetId is null ? null : State.Assets.FirstOrDefault(asset => asset.Id == studioAssetId);
+    private AssetDefinition? ManagedLibraryAsset => managedLibraryAssetId is null ? null : State.Assets.FirstOrDefault(asset => asset.Id == managedLibraryAssetId);
+    private Sprite2World.Contracts.ProjectSummary? SelectedLibraryProject => selectedLibraryProjectId is null ? null : projectList.FirstOrDefault(project => project.Id == selectedLibraryProjectId);
+    private IEnumerable<AssetFolderDefinition> LibraryFolders => State.AssetFolders.Concat(State.Assets.Select(asset => new AssetFolderDefinition(AssetThemeKey(asset), AssetSubfolder(asset))))
+        .GroupBy(folder => $"{folder.Theme}\u001f{folder.Subfolder}", StringComparer.OrdinalIgnoreCase)
+        .Select(group => group.First());
+    private IEnumerable<AssetFolderDefinition> NewSpriteFolderChoices => LibraryFolders.Append(new("Custom", "Sprites"))
+        .GroupBy(folder => $"{folder.Theme}\u001f{folder.Subfolder}", StringComparer.OrdinalIgnoreCase)
+        .Select(group => group.First());
+    private IEnumerable<AssetDefinition> StudioAssets => State.Assets.Where(asset =>
+        (string.IsNullOrWhiteSpace(studioSearch) || asset.FileName.Contains(studioSearch, StringComparison.OrdinalIgnoreCase) || asset.RelativePath.Contains(studioSearch, StringComparison.OrdinalIgnoreCase)) &&
+        (string.IsNullOrWhiteSpace(normalStatusFilter) || normalStatusFilter == "ready" && asset.NormalMapStatus == DerivedAssetStatus.Ready || normalStatusFilter == "not-ready" && asset.NormalMapStatus != DerivedAssetStatus.Ready));
+    private IEnumerable<AssetDefinition> StudioLibraryAssets => StudioAssets.Where(asset =>
+        activeLibraryTheme is null || string.Equals(AssetThemeKey(asset), activeLibraryTheme, StringComparison.OrdinalIgnoreCase) &&
+        (activeLibrarySubfolder is null || string.Equals(AssetSubfolder(asset), activeLibrarySubfolder, StringComparison.OrdinalIgnoreCase)));
+    private string ActiveLibraryFolderLabel => activeLibraryTheme is null ? T("All sprites", "Alle Sprites") : activeLibrarySubfolder is null ? FolderDisplayName(activeLibraryTheme) : $"{FolderDisplayName(activeLibraryTheme)} / {activeLibrarySubfolder}";
+    private int NormalReadyCount => State.Assets.Count(asset => asset.NormalMapStatus == DerivedAssetStatus.Ready);
+    private int NormalPercent => State.Assets.Count == 0 ? 0 : (int)Math.Round(NormalReadyCount * 100d / State.Assets.Count);
+    private (string Value, string Label, string Css)[] NormalStatusFilters =>
+    [
+        ("", T("All", "Alle"), "all"), ("ready", T("Ready", "Bereit"), "ready"), ("not-ready", T("Not ready", "Nicht bearbeitet"), "review")
+    ];
+    private (string Id, string Label, string Shortcut, string Icon)[] SpriteTools =>
+    [
+        ("pointer", T("Pointer", "Zeiger"), "V", "arrow_selector_tool"), ("pencil", T("Pencil", "Stift"), "B", "edit"),
+        ("eraser", T("Eraser", "Radierer"), "E", "ink_eraser"), ("fill", T("Fill", "Füllen"), "G", "format_color_fill"),
+        ("eyedropper", T("Pick", "Pipette"), "I", "colorize"), ("select", T("Select", "Auswahl"), "M", "select"),
+        ("move", T("Move canvas", "Zeichenfläche verschieben"), "H", "open_with")
+    ];
+    private string SpriteToolTitle(string id, string label, string shortcut) => id == "select"
+        ? $"{label} ({shortcut}) · Ctrl/Cmd+A, C, X · Backspace/Delete · Esc"
+        : $"{label} ({shortcut})";
+    private static readonly int[] BrushSizePresets = [1, 2, 3, 4, 6];
+    private static readonly string[] SpritePalette = [
+        "#f6f7f8", "#c9cbd0", "#9699a1", "#5d6068", "#3f424a", "#292d35", "#1a1e25", "#10141a",
+        "#171712", "#41372a", "#24231d", "#34332c", "#3e1f10", "#604020", "#86582d", "#4b3b28",
+        "#32200f", "#68421b", "#9d6832", "#bf8544", "#252a33", "#9f7340", "#d0ad72", "#aaadb3",
+        "#757b82", "#9b5150", "#7c3237", "#8d2526", "#bd3d2e", "#81636b", "#85412f", "#864d42",
+        "#324550", "#4f8092", "#6f4b2a", "#6e4223", "#6d8437", "#8ea64a", "#3e6f35", "#365a3e"
+    ];
+    private static readonly string[] NormalPalette = ["#8080ff", "#ff8080", "#0080ff", "#80ff80", "#8000ff", "#ffff80", "#80ffff", "#ff80ff", "#b4b4e8", "#4c4cdb", "#db4c80", "#4cdb80", "#c080ff", "#80c0ff", "#ff80c0", "#80ffc0", "#4040ff", "#ff4040", "#40ff40", "#c0c0ff"];
+    private static readonly string[] ScalarPalette = ["#000000", "#181818", "#303030", "#484848", "#606060", "#787878", "#909090", "#a8a8a8", "#c0c0c0", "#d8d8d8", "#f0f0f0", "#ffffff"];
+    private static readonly MaterialChannel[] MaterialChannels = [MaterialChannel.Base, MaterialChannel.Normal, MaterialChannel.Metallic, MaterialChannel.Roughness, MaterialChannel.Lit];
+    private const int SpriteTilePixels = 48;
+    private static readonly (int Width, int Height)[] SpriteTilePresets = [(1, 1), (2, 1), (2, 2), (3, 2), (2, 3), (3, 3)];
+    private int NewSpritePixelWidth => Math.Clamp(newSpriteTilesWide, 1, 8) * SpriteTilePixels;
+    private int NewSpritePixelHeight => Math.Clamp(newSpriteTilesHigh, 1, 8) * SpriteTilePixels;
+    private List<string> ActiveSpritePalette => PaletteFor(activeMaterialChannel);
+    private static MaterialChannel PaletteChannel(MaterialChannel channel) => channel == MaterialChannel.Lit ? MaterialChannel.Base : channel;
+    private List<string> PaletteFor(MaterialChannel channel)
+    {
+        var key = PaletteChannel(channel);
+        if (spritePalettes.TryGetValue(key, out var palette)) return palette;
+        var defaults = key == MaterialChannel.Normal ? NormalPalette : key is MaterialChannel.Metallic or MaterialChannel.Roughness ? ScalarPalette : SpritePalette;
+        palette = defaults.Distinct(StringComparer.OrdinalIgnoreCase).ToList(); spritePalettes[key] = palette; return palette;
+    }
+    private string PaletteColorCss(string color)
+    {
+        var primary = string.Equals(spriteColor, color, StringComparison.OrdinalIgnoreCase);
+        var secondary = string.Equals(spriteSecondaryColor, color, StringComparison.OrdinalIgnoreCase);
+        return primary && secondary ? "primary-selected secondary-selected" : primary ? "primary-selected" : secondary ? "secondary-selected" : "";
+    }
+    private string PaletteHint => activeMaterialChannel == MaterialChannel.Normal ? T("Direction colors", "Richtungsfarben") : activeMaterialChannel is MaterialChannel.Metallic or MaterialChannel.Roughness ? T("Grayscale values", "Graustufenwerte") : T("Sprite colors", "Sprite-Farben");
+    private int SpriteZoomPercent => (int)Math.Round(spriteZoom * 100);
+    private string BrushPreviewSize => $"{Math.Clamp(8 + spriteBrushSize * 3, 10, 36)}px";
+    private static string BrushDotSize(int size) => $"{Math.Clamp(5 + size * 2, 7, 20)}px";
+    private string AssetThemeKey(AssetDefinition asset)
+    {
+        var value = string.IsNullOrWhiteSpace(asset.Category) ? "General" : asset.Category.Trim();
+        var theme = value.Split('/', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "General";
+        return theme.Equals("Allgemein", StringComparison.OrdinalIgnoreCase) ? "General" : theme;
+    }
+    private string FolderDisplayName(string value) => value is "General" or "Allgemein" ? T("General", "Allgemein") : value;
+    private static string NormalizeLibraryFolderName(string? value, string fallback)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value) ? fallback : value.Trim().Replace('/', '-').Replace('\\', '-');
+        return normalized[..Math.Min(normalized.Length, 40)];
+    }
+    private static string NormalizeLibraryThemeName(string? value)
+    {
+        var normalized = NormalizeLibraryFolderName(value, "General");
+        return normalized.Equals("Allgemein", StringComparison.OrdinalIgnoreCase) ? "General" : normalized;
+    }
+    private static string LibraryFolderPath(string theme, string subfolder) => $"{theme}/{subfolder}";
+    private string NewSpriteFolderPath
+    {
+        get => LibraryFolderPath(newSpriteFolderTheme, newSpriteFolderSubfolder);
+        set
+        {
+            var parts = (value ?? "").Split('/', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            newSpriteFolderTheme = NormalizeLibraryThemeName(parts.FirstOrDefault());
+            newSpriteFolderSubfolder = NormalizeLibraryFolderName(parts.Length > 1 ? parts[1] : null, "Sprites");
+        }
+    }
+    private string AssetSubfolder(AssetDefinition asset)
+    {
+        var parts = (asset.Category ?? "").Split('/', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length > 1 ? parts[1] : asset.Role switch { AssetRole.StartMarker => "Start", AssetRole.ExitMarker => "Exit", _ => asset.Role.ToString() };
+    }
+
+    protected override Task OnInitializedAsync() { State.Changed += StateChanged; Localizer.Changed += LanguageChanged; return Task.CompletedTask; }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            dotNetReference = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("sprite2world.init", "worldCanvas", dotNetReference);
+            var savedLanguage = await JS.InvokeAsync<string?>("sprite2world.getPreference", "language");
+            if (savedLanguage is "en" or "de")
+            {
+                var promptIsDefault = State.Prompt is DefaultPromptEnglish or DefaultPromptGerman;
+                var feedbackIsDefault = State.Feedback is DefaultFeedbackEnglish or DefaultFeedbackGerman;
+                Localizer.SetLanguage(savedLanguage);
+                if (promptIsDefault) State.Prompt = T(DefaultPromptEnglish, DefaultPromptGerman);
+                if (feedbackIsDefault) State.Feedback = T(DefaultFeedbackEnglish, DefaultFeedbackGerman);
+                newProjectName = T("New Project", "Neues Projekt");
+                await JS.InvokeVoidAsync("sprite2world.setPreference", "language", savedLanguage);
+            }
+            var protectedCredential = await JS.InvokeAsync<string?>("sprite2world.getPreference", "openAiCredential");
+            var restoredCredential = await Credentials.RestoreAsync(protectedCredential);
+            if (!restoredCredential && !string.IsNullOrWhiteSpace(protectedCredential))
+                await JS.InvokeVoidAsync("sprite2world.setPreference", "openAiCredential", "");
+            if (!restoredCredential && Credentials.HasConfiguredServerKey)
+            {
+                var configuredKeyResult = await Credentials.ValidateConfiguredServerKeyAsync();
+                restoredCredential = configuredKeyResult.Success;
+                if (configuredKeyResult.Success && configuredKeyResult.ProtectedToken is not null)
+                    await JS.InvokeVoidAsync("sprite2world.setPreference", "openAiCredential", configuredKeyResult.ProtectedToken);
+            }
+            var onboardingComplete = await JS.InvokeAsync<string?>("sprite2world.getPreference", "onboardingComplete");
+            showOnboarding = onboardingComplete != "true";
+            await LoadSpriteColorPreferences();
+            var activeProjectId = await JS.InvokeAsync<string?>("sprite2world.getPreference", "activeProjectId");
+            if (!string.IsNullOrWhiteSpace(activeProjectId)) await State.LoadProjectAsync(activeProjectId);
+            if (string.IsNullOrWhiteSpace(activeProjectId) || State.ProjectId != activeProjectId) await State.InitializeAsync();
+            if (State.HasOpenProject) await JS.InvokeVoidAsync("sprite2world.setPreference", "activeProjectId", State.ProjectId);
+            projectList = await State.ListProjectsAsync();
+            await InvokeAsync(StateHasChanged);
+        }
+        if (pendingCanvasRender && State.World is not null && activeTab is "World Preview" or "Playtest")
+        {
+            pendingCanvasRender = false;
+            try
+            {
+                await JS.InvokeVoidAsync("sprite2world.init", "worldCanvas", dotNetReference);
+                await JS.InvokeVoidAsync("sprite2world.render", "worldCanvas", State.World, State.Assets, new { showGrid, snapElementsToGrid, spriteTilePixels = SpriteTilePixels, zoom, playtest = activeTab == "Playtest", tool = activeTab == "Playtest" ? "pan" : editorTool, brushAssetId, activeLayerId = State.ActiveLayerId, language = Localizer.Language, lightingEnabled = worldLightingEnabled, lightIntensity = worldLightIntensity, lightRange = worldLightRange, lightColor = worldLightColor });
+                if (pendingPlayStart) { pendingPlayStart = false; await JS.InvokeVoidAsync("sprite2world.start", "worldCanvas"); }
+            }
+            catch (JSException ex) { Logger.LogWarning(ex, "Canvas render deferred"); }
+        }
+        if (pendingSpriteStudioRender && libraryStudioOpen && libraryTab == "sprites" && StudioAsset is not null && dotNetReference is not null)
+        {
+            pendingSpriteStudioRender = false;
+            try
+            {
+                await JS.InvokeVoidAsync("spriteStudio.init", "spriteEditorCanvas", "spriteLitCanvas", dotNetReference, StudioAsset.Id, StudioAsset.Url, ActiveMaterialUrl(StudioAsset), StudioAsset.NormalMapUrl, StudioAsset.MetallicMapUrl, StudioAsset.RoughnessMapUrl, new { mode = activeMaterialChannel.ToString().ToLowerInvariant(), tool = spriteTool, color = spriteColor, secondaryColor = spriteSecondaryColor, brushSize = spriteBrushSize, zoom = spriteZoom, grid = spriteGrid, gridSize = spriteGridSize, seamless = spriteSeamlessPreview, lighting = spriteLighting, normalStrength = StudioAsset.NormalStrength, metallicStrength = StudioAsset.MetallicStrength, roughnessStrength = StudioAsset.RoughnessStrength, lightIntensity = StudioAsset.LightIntensity });
+            }
+            catch (JSException ex) { Logger.LogWarning(ex, "Sprite studio render deferred"); }
+        }
+    }
+    private void StateChanged()
+    {
+        pendingCanvasRender = true;
+        if (libraryStudioOpen && !spriteAutosaving)
+        {
+            if (StudioAsset is null && State.Assets.Count > 0) studioAssetId = State.Assets[0].Id;
+            pendingSpriteStudioRender = true;
+        }
+        ScheduleAutoSave(); _ = InvokeAsync(StateHasChanged);
+    }
+    private void LanguageChanged() { pendingCanvasRender = true; _ = InvokeAsync(StateHasChanged); }
+    private async Task ChangeLanguage(ChangeEventArgs args)
+    {
+        var previousDefault = Localizer.IsGerman ? "Neues Projekt" : "New Project";
+        var language = args.Value?.ToString() == "de" ? "de" : "en";
+        var promptIsDefault = State.Prompt is DefaultPromptEnglish or DefaultPromptGerman;
+        var feedbackIsDefault = State.Feedback is DefaultFeedbackEnglish or DefaultFeedbackGerman;
+        Localizer.SetLanguage(language);
+        if (newProjectName is "New Project" or "Neues Projekt" || newProjectName == previousDefault) newProjectName = T("New Project", "Neues Projekt");
+        if (promptIsDefault) State.Prompt = T(DefaultPromptEnglish, DefaultPromptGerman);
+        if (feedbackIsDefault) State.Feedback = T(DefaultFeedbackEnglish, DefaultFeedbackGerman);
+        await JS.InvokeVoidAsync("sprite2world.setPreference", "language", language);
+    }
+    private async Task SetOnboardingLanguage(string language)
+    {
+        Localizer.SetLanguage(language == "de" ? "de" : "en");
+        newProjectName = T("New Project", "Neues Projekt");
+        if (State.Prompt is DefaultPromptEnglish or DefaultPromptGerman) State.Prompt = T(DefaultPromptEnglish, DefaultPromptGerman);
+        if (State.Feedback is DefaultFeedbackEnglish or DefaultFeedbackGerman) State.Feedback = T(DefaultFeedbackEnglish, DefaultFeedbackGerman);
+        await JS.InvokeVoidAsync("sprite2world.setPreference", "language", Localizer.Language);
+    }
+    private async Task ValidateApiKey()
+    {
+        if (validatingApiKey || string.IsNullOrWhiteSpace(apiKeyInput)) return;
+        validatingApiKey = true; apiKeyMessage = T("Checking the connection…", "Verbindung wird geprüft…");
+        await InvokeAsync(StateHasChanged);
+        var result = await Credentials.ValidateAsync(apiKeyInput);
+        apiKeyInput = ""; apiKeyHasError = !result.Success;
+        apiKeyMessage = result.Success ? T("Connection successful. All AI features are now available.", "Verbindung erfolgreich. Alle KI-Funktionen sind jetzt verfügbar.") : T(result.Message, result.Message switch
+        {
+            "Enter a complete OpenAI API key." => "Gib einen vollständigen OpenAI-API-Schlüssel ein.",
+            "This API key is invalid or has been revoked." => "Dieser API-Schlüssel ist ungültig oder wurde widerrufen.",
+            "This API key does not have the required OpenAI access." => "Dieser API-Schlüssel besitzt nicht den erforderlichen OpenAI-Zugriff.",
+            "The key was recognized, but its quota or rate limit currently prevents use." => "Der Schlüssel wurde erkannt, aber Kontingent oder Rate-Limit verhindern derzeit die Nutzung.",
+            "OpenAI did not respond in time." => "OpenAI hat nicht rechtzeitig geantwortet.",
+            "OpenAI is currently unreachable. Check the connection and try again." => "OpenAI ist derzeit nicht erreichbar. Prüfe die Verbindung und versuche es erneut.",
+            _ => "OpenAI konnte den Schlüssel nicht prüfen. Bitte versuche es erneut."
+        });
+        if (result.Success && result.ProtectedToken is not null)
+        {
+            await JS.InvokeVoidAsync("sprite2world.setPreference", "openAiCredential", result.ProtectedToken);
+            await JS.InvokeVoidAsync("sprite2world.setPreference", "onboardingComplete", "true");
+            showOnboarding = false;
+        }
+        validatingApiKey = false;
+        await InvokeAsync(StateHasChanged);
+    }
+    private async Task ContinueWithoutAi()
+    {
+        await JS.InvokeVoidAsync("sprite2world.setPreference", "onboardingComplete", "true");
+        showOnboarding = false; apiKeyInput = ""; apiKeyMessage = ""; apiKeyHasError = false;
+    }
+    private async Task RemoveApiKey()
+    {
+        Credentials.Clear(); apiKeyInput = ""; apiKeyHasError = false; apiKeyMessage = T("API key removed. AI features are locked.", "API-Schlüssel entfernt. KI-Funktionen sind gesperrt.");
+        await JS.InvokeVoidAsync("sprite2world.setPreference", "openAiCredential", "");
+    }
+    private async Task ImportFiles(InputFileChangeEventArgs e)
+    {
+        var browserFiles = e.GetMultipleFiles(MaxUploadFiles);
+        var previousIds = State.Assets.Select(asset => asset.Id).ToHashSet(StringComparer.Ordinal);
+        var processed = 0;
+        foreach (var batch in browserFiles.Chunk(ImportBatchSize))
+        {
+            var files = new List<(string, byte[])>(batch.Length);
+            foreach (var file in batch)
+            {
+                await using var stream = file.OpenReadStream(MaxUploadFileBytes);
+                using var memory = new MemoryStream();
+                await stream.CopyToAsync(memory);
+                var data = memory.ToArray();
+                if (Path.GetExtension(file.Name).Equals(".png", StringComparison.OrdinalIgnoreCase))
+                {
+                    var resized = await JS.InvokeAsync<string>("spriteStudio.resizeBase64", Convert.ToBase64String(data), NewSpritePixelWidth, NewSpritePixelHeight);
+                    data = Convert.FromBase64String(resized);
+                }
+                files.Add((file.Name, data));
+            }
+            await State.ImportAsync(files, processed, browserFiles.Count);
+            processed += batch.Length;
+        }
+        visibleAssetLimit = AssetPageSize;
+        studioAssetId = State.Assets.FirstOrDefault(asset => !previousIds.Contains(asset.Id))?.Id ?? studioAssetId ?? State.Assets.FirstOrDefault()?.Id;
+        libraryAddOpen = false; showSpriteSetupDialog = false; activeMaterialChannel = MaterialChannel.Base;
+        pendingSpriteStudioRender = true;
+        pendingCanvasRender = true;
+    }
+    private async Task OpenWorldsSection()
+    {
+        libraryAddOpen = false;
+        if (libraryStudioOpen && libraryTab == "sprites")
+        {
+            await SaveSpriteNowAsync();
+            if (State.HasOpenProject) { libraryStudioOpen = false; spriteDirty = false; pendingCanvasRender = true; return; }
+        }
+        else if (!libraryStudioOpen)
+        {
+            await SaveWorldPreviewAsync();
+            libraryTab = "projects"; libraryStudioOpen = true; projectList = await State.ListProjectsAsync(); return;
+        }
+        else if (libraryTab == "projects" && State.HasOpenProject)
+        {
+            libraryStudioOpen = false; pendingCanvasRender = true; return;
+        }
+        libraryTab = "projects"; libraryStudioOpen = true; projectList = await State.ListProjectsAsync();
+    }
+    private async Task OpenSpritesSection()
+    {
+        if (libraryStudioOpen && libraryTab == "sprites") { await CloseLibraryStudio(); return; }
+        libraryTab = "sprites"; libraryStudioOpen = true; libraryAddOpen = false;
+        studioAssetId ??= State.Assets.FirstOrDefault()?.Id; pendingSpriteStudioRender = true;
+    }
+    private void OpenSpriteSetup(bool import)
+    {
+        libraryAddOpen = false; spriteSetupImport = import;
+        if (!import)
+        {
+            newSpriteFolderTheme = activeLibraryTheme ?? "Custom";
+            newSpriteFolderSubfolder = activeLibrarySubfolder ?? NewSpriteFolderChoices.FirstOrDefault(folder => string.Equals(folder.Theme, newSpriteFolderTheme, StringComparison.OrdinalIgnoreCase))?.Subfolder ?? "Sprites";
+        }
+        showSpriteSetupDialog = true;
+    }
+    private async Task LoadStarterSprites() { libraryAddOpen = false; await State.LoadDemoAsync(); }
+    private void SetSpriteTileSize(int width, int height) { newSpriteTilesWide = Math.Clamp(width, 1, 8); newSpriteTilesHigh = Math.Clamp(height, 1, 8); }
+    private async Task CreateBlankSprite()
+    {
+        newSpriteTilesWide = Math.Clamp(newSpriteTilesWide, 1, 8); newSpriteTilesHigh = Math.Clamp(newSpriteTilesHigh, 1, 8);
+        var base64 = await JS.InvokeAsync<string>("spriteStudio.createBlankBase64", NewSpritePixelWidth, NewSpritePixelHeight);
+        var created = await State.CreateSpriteAsync(newSpriteName, NewSpritePixelWidth, NewSpritePixelHeight, base64, newSpriteFolderTheme, newSpriteFolderSubfolder);
+        if (created is null) return;
+        studioAssetId = created.Id; activeLibraryTheme = newSpriteFolderTheme; activeLibrarySubfolder = newSpriteFolderSubfolder; expandedLibraryThemes.Add(newSpriteFolderTheme); activeMaterialChannel = MaterialChannel.Base; spriteDirty = false; showSpriteSetupDialog = false; pendingSpriteStudioRender = true;
+    }
+    private async Task CloseLibraryStudio()
+    {
+        await SaveSpriteNowAsync();
+        libraryStudioOpen = false; spriteDirty = false; pendingCanvasRender = true;
+    }
+    private async Task CreateProjectFromLibrary()
+    {
+        libraryAddOpen = false; await NewProject(); libraryStudioOpen = false; libraryTab = "projects"; pendingCanvasRender = true;
+        projectList = await State.ListProjectsAsync();
+    }
+    private async Task OpenStudioAsset(AssetDefinition asset)
+    {
+        if (asset.Id == studioAssetId) return;
+        await SaveSpriteNowAsync();
+        studioAssetId = asset.Id; activeMaterialChannel = MaterialChannel.Base; spriteDirty = false; pendingSpriteStudioRender = true;
+    }
+    private static string ProjectPreviewUrl(Sprite2World.Contracts.ProjectSummary project) =>
+        $"/data/projects/{Uri.EscapeDataString(project.Id)}/preview.png?v={project.UpdatedAt.UtcTicks}";
+    private async Task SelectProjectFromLibrary(Sprite2World.Contracts.ProjectSummary project)
+    {
+        if (selectedLibraryProjectId == project.Id) { await OpenProjectFromLibrary(project.Id); return; }
+        selectedLibraryProjectId = project.Id;
+    }
+    private async Task OpenProjectFromLibrary(string id) { await LoadProject(id); libraryStudioOpen = false; }
+    private async Task SetSpriteTool(string tool) { spriteTool = tool; await JS.InvokeVoidAsync("spriteStudio.setTool", "spriteEditorCanvas", tool); }
+    private Task UndoSprite() => JS.InvokeVoidAsync("spriteStudio.undo", "spriteEditorCanvas").AsTask();
+    private Task RedoSprite() => JS.InvokeVoidAsync("spriteStudio.redo", "spriteEditorCanvas").AsTask();
+    private Task SelectAllSpritePixels() => JS.InvokeVoidAsync("spriteStudio.selectAll", "spriteEditorCanvas").AsTask();
+    private Task CopySpriteSelection() => JS.InvokeVoidAsync("spriteStudio.copy", "spriteEditorCanvas").AsTask();
+    private Task CutSpriteSelection() => JS.InvokeVoidAsync("spriteStudio.cut", "spriteEditorCanvas").AsTask();
+    private Task DeleteSpriteSelection() => JS.InvokeVoidAsync("spriteStudio.deleteSelected", "spriteEditorCanvas").AsTask();
+    private Task ClearSpriteSelection() => JS.InvokeVoidAsync("spriteStudio.clearSelection", "spriteEditorCanvas").AsTask();
+    private async Task ChangeSpriteBrushSize(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var value)) spriteBrushSize = Math.Clamp(value, 1, 10);
+        await JS.InvokeVoidAsync("spriteStudio.setBrushSize", "spriteEditorCanvas", spriteBrushSize);
+    }
+    private Task SetSpriteBrushSize(int value) => ChangeSpriteBrushSize(new ChangeEventArgs { Value = value.ToString() });
+    private Task DecreaseSpriteBrush() => SetSpriteBrushSize(Math.Max(1, spriteBrushSize - 1));
+    private Task IncreaseSpriteBrush() => SetSpriteBrushSize(Math.Min(10, spriteBrushSize + 1));
+    private async Task ChangeSpriteZoom(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value)) spriteZoom = Math.Clamp(value / 100d, .25, 8);
+        await JS.InvokeVoidAsync("spriteStudio.setZoom", "spriteEditorCanvas", spriteZoom);
+    }
+    private async Task ToggleSpriteGrid() { spriteGrid = !spriteGrid; await JS.InvokeVoidAsync("spriteStudio.setGrid", "spriteEditorCanvas", spriteGrid); }
+    private async Task ToggleSpriteSeamlessPreview() { spriteSeamlessPreview = !spriteSeamlessPreview; await JS.InvokeVoidAsync("spriteStudio.setSeamless", "spriteEditorCanvas", spriteSeamlessPreview); }
+    private async Task ChangeSpriteGridSize(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var value) && value is 1 or 2 or 3 or 4 or 8) spriteGridSize = value;
+        await JS.InvokeVoidAsync("spriteStudio.setGridSize", "spriteEditorCanvas", spriteGridSize);
+    }
+    private async Task ToggleSpriteLighting() { spriteLighting = !spriteLighting; await JS.InvokeVoidAsync("spriteStudio.setLighting", "spriteEditorCanvas", spriteLighting); }
+    private async Task SaveAndApproveMaterial()
+    {
+        if (StudioAsset is null) return;
+        if (activeMaterialChannel == MaterialChannel.Lit)
+        {
+            await State.SaveMaterialSettingsAsync(StudioAsset); State.MarkNormalReviewed(StudioAsset); spriteDirty = false; pendingSpriteStudioRender = true; return;
+        }
+        var base64 = await JS.InvokeAsync<string?>("spriteStudio.exportBase64", "spriteEditorCanvas"); if (string.IsNullOrWhiteSpace(base64)) return;
+        if (activeMaterialChannel == MaterialChannel.Base)
+        {
+            await State.SaveSpriteImageAsync(StudioAsset, base64);
+            var normal = await JS.InvokeAsync<string?>("spriteStudio.generateNormal", StudioAsset.Url, StudioAsset.NormalStrength, StudioAsset.NormalInvertY);
+            if (!string.IsNullOrWhiteSpace(normal)) await State.SaveNormalMapAsync(StudioAsset, normal, StudioAsset.NormalStrength, StudioAsset.NormalInvertY, true);
+        }
+        else await State.SaveMaterialMapAsync(StudioAsset, activeMaterialChannel, base64, true);
+        spriteDirty = false; pendingSpriteStudioRender = true;
+    }
+    private async Task LoadSpriteColorPreferences()
+    {
+        var primary = await JS.InvokeAsync<string?>("sprite2world.getPreference", "spritePrimaryColor");
+        var secondary = await JS.InvokeAsync<string?>("sprite2world.getPreference", "spriteSecondaryColor");
+        if (IsHexColor(primary)) spriteColor = primary!.ToLowerInvariant();
+        if (IsHexColor(secondary)) spriteSecondaryColor = secondary!.ToLowerInvariant();
+        var saved = await JS.InvokeAsync<string?>("sprite2world.getPreference", "spritePalettes");
+        if (string.IsNullOrWhiteSpace(saved)) return;
+        try
+        {
+            var palettes = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, List<string>>>(saved);
+            if (palettes is null) return;
+            foreach (var channel in new[] { MaterialChannel.Base, MaterialChannel.Normal, MaterialChannel.Metallic, MaterialChannel.Roughness })
+            {
+                if (!palettes.TryGetValue(channel.ToString(), out var colors)) continue;
+                spritePalettes[channel] = colors.Where(IsHexColor).Select(color => color.ToLowerInvariant()).Distinct(StringComparer.OrdinalIgnoreCase).Take(1000).ToList();
+            }
+        }
+        catch (System.Text.Json.JsonException) { }
+    }
+    private Task SaveSpritePalettes() => JS.InvokeVoidAsync("sprite2world.setPreference", "spritePalettes", System.Text.Json.JsonSerializer.Serialize(spritePalettes.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value))).AsTask();
+    private static bool IsHexColor(string? color) => color is { Length: 7 } && color[0] == '#' && color.Skip(1).All(Uri.IsHexDigit);
+    private async Task ChangeSpriteColor(ChangeEventArgs e) { if (IsHexColor(e.Value?.ToString())) await PickPaletteColor(e.Value!.ToString()!); }
+    private async Task ChangeSpriteSecondaryColor(ChangeEventArgs e) { if (IsHexColor(e.Value?.ToString())) await PickPaletteSecondaryColor(e.Value!.ToString()!); }
+    private async Task PickPaletteColor(string color)
+    {
+        if (!IsHexColor(color)) return;
+        spriteColor = color.ToLowerInvariant(); await JS.InvokeVoidAsync("spriteStudio.setColor", "spriteEditorCanvas", spriteColor); await JS.InvokeVoidAsync("sprite2world.setPreference", "spritePrimaryColor", spriteColor);
+    }
+    private async Task PickPaletteSecondaryColor(string color)
+    {
+        if (!IsHexColor(color)) return;
+        spriteSecondaryColor = color.ToLowerInvariant(); await JS.InvokeVoidAsync("spriteStudio.setSecondaryColor", "spriteEditorCanvas", spriteSecondaryColor); await JS.InvokeVoidAsync("sprite2world.setPreference", "spriteSecondaryColor", spriteSecondaryColor);
+    }
+    private async Task SwapSpriteColors()
+    {
+        (spriteColor, spriteSecondaryColor) = (spriteSecondaryColor, spriteColor);
+        await JS.InvokeVoidAsync("spriteStudio.setColors", "spriteEditorCanvas", spriteColor, spriteSecondaryColor);
+        await JS.InvokeVoidAsync("sprite2world.setPreference", "spritePrimaryColor", spriteColor); await JS.InvokeVoidAsync("sprite2world.setPreference", "spriteSecondaryColor", spriteSecondaryColor);
+    }
+    private async Task AddCurrentColorToPalette()
+    {
+        var palette = ActiveSpritePalette;
+        if (!palette.Contains(spriteColor, StringComparer.OrdinalIgnoreCase)) { palette.Add(spriteColor); await SaveSpritePalettes(); }
+    }
+    private void RequestDeletePaletteColor()
+    {
+        pendingPaletteColor = ActiveSpritePalette.FirstOrDefault(color => string.Equals(color, spriteColor, StringComparison.OrdinalIgnoreCase));
+        showDeletePaletteColorDialog = pendingPaletteColor is not null;
+    }
+    private void CloseDeletePaletteColorDialog() { showDeletePaletteColorDialog = false; pendingPaletteColor = null; }
+    private async Task DeletePaletteColor()
+    {
+        if (pendingPaletteColor is null) return;
+        ActiveSpritePalette.RemoveAll(color => string.Equals(color, pendingPaletteColor, StringComparison.OrdinalIgnoreCase));
+        CloseDeletePaletteColorDialog(); await SaveSpritePalettes();
+    }
+    private async Task ChangeSpriteHex(ChangeEventArgs e)
+    {
+        var value = e.Value?.ToString()?.Trim().TrimStart('#');
+        if (value is null || value.Length != 6 || !value.All(Uri.IsHexDigit)) return;
+        await PickPaletteColor($"#{value.ToLowerInvariant()}");
+    }
+    private static string NormalStatusCss(AssetDefinition asset) => asset.NormalMapStatus == DerivedAssetStatus.Ready ? "ready" : "review";
+    private string NormalStatusLabel(AssetDefinition asset) => asset.NormalMapStatus == DerivedAssetStatus.Ready ? T("Ready", "Bereit") : T("Not ready", "Nicht bearbeitet");
+    private async Task ChangeNormalStrength(ChangeEventArgs e)
+    {
+        if (StudioAsset is null || !double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var strength)) return;
+        State.SetNormalSettings(StudioAsset, strength, StudioAsset.NormalInvertY);
+        await ApplyMaterialSettingsToCanvas();
+    }
+    private void ChangeNormalInvertY(ChangeEventArgs e)
+    {
+        if (StudioAsset is null) return;
+        State.SetNormalSettings(StudioAsset, StudioAsset.NormalStrength, (bool)(e.Value ?? false)); pendingSpriteStudioRender = true;
+    }
+    private async Task GenerateNormalForAsset(AssetDefinition asset)
+    {
+        var base64 = await JS.InvokeAsync<string?>("spriteStudio.generateNormal", asset.Url, asset.NormalStrength, asset.NormalInvertY);
+        if (string.IsNullOrWhiteSpace(base64)) return;
+        await State.SaveNormalMapAsync(asset, base64, asset.NormalStrength, asset.NormalInvertY); activeMaterialChannel = MaterialChannel.Normal; pendingSpriteStudioRender = true;
+    }
+    private async Task FinalizeStudioSprite()
+    {
+        await SaveSpriteNowAsync();
+        var asset = StudioAsset; if (asset is null) return;
+        if (asset.NormalMapUrl is null || asset.NormalMapSourceHash != asset.ContentHash)
+        {
+            var normal = await JS.InvokeAsync<string?>("spriteStudio.generateNormal", asset.Url, asset.NormalStrength, asset.NormalInvertY);
+            if (string.IsNullOrWhiteSpace(normal)) return;
+            await State.SaveNormalMapAsync(asset, normal, asset.NormalStrength, asset.NormalInvertY, true);
+        }
+        else await State.FinalizeSpriteAsync(asset);
+        pendingSpriteStudioRender = true;
+    }
+    private async Task GenerateMissingNormals()
+    {
+        foreach (var asset in State.Assets.Where(item => item.NormalMapUrl is null || item.NormalMapSourceHash != item.ContentHash || item.NormalMapStatus == DerivedAssetStatus.Failed).ToArray())
+        {
+            var base64 = await JS.InvokeAsync<string?>("spriteStudio.generateNormal", asset.Url, asset.NormalStrength, asset.NormalInvertY);
+            if (string.IsNullOrWhiteSpace(base64)) { asset.NormalMapStatus = DerivedAssetStatus.Failed; continue; }
+            await State.SaveNormalMapAsync(asset, base64, asset.NormalStrength, asset.NormalInvertY);
+        }
+        pendingSpriteStudioRender = true;
+    }
+    private async Task SetMaterialChannel(MaterialChannel channel)
+    {
+        if (channel == activeMaterialChannel) return;
+        await SaveSpriteNowAsync();
+        activeMaterialChannel = channel; spriteDirty = false;
+        var palette = PaletteFor(channel);
+        if (channel != MaterialChannel.Lit && palette.Count > 0)
+        {
+            spriteColor = palette[0];
+            spriteSecondaryColor = palette.Count > 1 ? palette[1] : palette[0];
+        }
+        pendingSpriteStudioRender = true;
+    }
+    private string ActiveMaterialUrl(AssetDefinition asset) => activeMaterialChannel switch
+    {
+        MaterialChannel.Normal => asset.NormalMapUrl ?? "",
+        MaterialChannel.Metallic => asset.MetallicMapUrl ?? "",
+        MaterialChannel.Roughness => asset.RoughnessMapUrl ?? "",
+        _ => asset.Url
+    };
+    private static string MaterialThumbnail(AssetDefinition asset, MaterialChannel channel) => channel switch
+    {
+        MaterialChannel.Normal => asset.NormalMapUrl ?? asset.Url,
+        MaterialChannel.Metallic => asset.MetallicMapUrl ?? asset.Url,
+        MaterialChannel.Roughness => asset.RoughnessMapUrl ?? asset.Url,
+        _ => asset.Url
+    };
+    private string MaterialChannelLabel(MaterialChannel channel) => channel switch
+    {
+        MaterialChannel.Base => T("Base", "Basis"), MaterialChannel.Normal => "Normal Map", MaterialChannel.Metallic => "Metallic",
+        MaterialChannel.Roughness => T("Roughness", "Rauheit"), _ => "Lit Preview"
+    };
+    private string MaterialChannelState(AssetDefinition asset, MaterialChannel channel) => channel switch
+    {
+        MaterialChannel.Base => $"{asset.Width}×{asset.Height}",
+        MaterialChannel.Normal => asset.NormalMapUrl is null ? T("Not created", "Nicht erstellt") : asset.NormalMapStatus == DerivedAssetStatus.Ready ? T("Approved", "Freigegeben") : T("Not ready", "Nicht bearbeitet"),
+        MaterialChannel.Metallic => asset.MetallicMapUrl is null ? T("Optional", "Optional") : T("Saved", "Gespeichert"),
+        MaterialChannel.Roughness => asset.RoughnessMapUrl is null ? T("Optional", "Optional") : T("Saved", "Gespeichert"),
+        _ => T("Real-time", "Echtzeit")
+    };
+    private string StudioAssetWorldUse => StudioAsset?.Role switch { AssetRole.Floor => "Floor", AssetRole.Wall => "Wall", _ => "Element" };
+    private async Task ChangeStudioAssetWorldUse(ChangeEventArgs e)
+    {
+        if (StudioAsset is null) return;
+        var role = e.Value?.ToString() switch { "Floor" => AssetRole.Floor, "Wall" => AssetRole.Wall, _ => StudioAsset.Role is AssetRole.Floor or AssetRole.Wall ? AssetRole.Decoration : StudioAsset.Role };
+        State.SetRole(StudioAsset, role); await State.SaveAsync(); pendingCanvasRender = true;
+    }
+    private string SpriteTileSizeLabel(AssetDefinition asset)
+    {
+        var tilesWide = Math.Max(1, (int)Math.Ceiling(asset.Width / (double)SpriteTilePixels));
+        var tilesHigh = Math.Max(1, (int)Math.Ceiling(asset.Height / (double)SpriteTilePixels));
+        return $"{tilesWide}×{tilesHigh} {T("tiles", "Kacheln")} · {asset.Width}×{asset.Height} px";
+    }
+    private bool SpriteAiSizeSupported => StudioAsset is { Width: <= 64, Height: <= 64 };
+    private string SpriteAiButtonTitle => !Credentials.IsReady
+        ? T("Add a valid API key in Settings first", "Zuerst einen gültigen API-Schlüssel in den Einstellungen hinterlegen")
+        : StudioAsset is null
+            ? T("Select a sprite first", "Wähle zuerst einen Sprite aus")
+            : SpriteAiSizeSupported
+                ? T("Draw the selected sprite with AI", "Ausgewählten Sprite mit KI zeichnen")
+                : T("Open AI options for this multi-tile sprite", "KI-Optionen für diesen Mehrkachel-Sprite öffnen");
+    private async Task ChangeMetallicStrength(ChangeEventArgs e)
+    {
+        if (StudioAsset is null || !double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value)) return;
+        State.SetMaterialSettings(StudioAsset, value, StudioAsset.RoughnessStrength, StudioAsset.LightIntensity); await ApplyMaterialSettingsToCanvas();
+    }
+    private async Task ChangeRoughnessStrength(ChangeEventArgs e)
+    {
+        if (StudioAsset is null || !double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value)) return;
+        State.SetMaterialSettings(StudioAsset, StudioAsset.MetallicStrength, value, StudioAsset.LightIntensity); await ApplyMaterialSettingsToCanvas();
+    }
+    private async Task ChangeLightIntensity(ChangeEventArgs e)
+    {
+        if (StudioAsset is null || !double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value)) return;
+        State.SetMaterialSettings(StudioAsset, StudioAsset.MetallicStrength, StudioAsset.RoughnessStrength, value); await ApplyMaterialSettingsToCanvas();
+    }
+    private Task ApplyMaterialSettingsToCanvas() => StudioAsset is null ? Task.CompletedTask : JS.InvokeVoidAsync("spriteStudio.setMaterialSettings", "spriteEditorCanvas", StudioAsset.NormalStrength, StudioAsset.MetallicStrength, StudioAsset.RoughnessStrength, StudioAsset.LightIntensity).AsTask();
+    private async Task OpenAiSpriteDialog()
+    {
+        if (!Credentials.IsReady || StudioAsset is null) return;
+        if (activeMaterialChannel != MaterialChannel.Base) await SetMaterialChannel(MaterialChannel.Base);
+        aiSpritePrompt = ""; aiSpriteCandidate = null; aiProgressStep = ""; aiProgressDetail = ""; aiProgressSpinning = false; aiProgressFailed = false; aiSuccessPulse = false; aiRequestActive = false; showAiSpriteDialog = true;
+    }
+    private async Task CreateAiSizedCopy()
+    {
+        var asset = StudioAsset; if (asset is null) return;
+        var source = await JS.InvokeAsync<string?>("spriteStudio.exportBase64", "spriteEditorCanvas"); if (string.IsNullOrWhiteSpace(source)) return;
+        var resized = await JS.InvokeAsync<string>("spriteStudio.resizeBase64", source, SpriteTilePixels, SpriteTilePixels);
+        var created = await State.CreateSpriteAsync($"{Path.GetFileNameWithoutExtension(asset.FileName)}-1x1", SpriteTilePixels, SpriteTilePixels, resized);
+        if (created is not null) { studioAssetId = created.Id; activeMaterialChannel = MaterialChannel.Base; showAiSpriteDialog = false; pendingSpriteStudioRender = true; }
+    }
+    private async Task GenerateAiSprite()
+    {
+        var asset = StudioAsset;
+        if (asset is null || !SpriteAiSizeSupported || string.IsNullOrWhiteSpace(aiSpritePrompt)) return;
+        var options = new SpriteGenerationOptions(aiSpriteView, aiSpriteFraming, aiSpriteOutline, aiSpriteLighting, aiSpritePaletteHint, State.ReasoningEffort);
+        aiSpriteCancellation?.Dispose(); aiSpriteCancellation = new CancellationTokenSource();
+        aiSpriteCandidate = null; aiSuccessPulse = false; aiRequestActive = true;
+        await SetAiProgress(T("Preparing prompt and canvas rules", "Prompt und Canvas-Regeln werden vorbereitet"));
+        await SetAiProgress(T("Sending request to OpenAI", "Anfrage wird an OpenAI gesendet"));
+        await Task.Delay(32);
+        var generationTask = State.GenerateSpriteAsync(aiSpritePrompt, asset.Width, asset.Height, options, aiSpriteCancellation.Token);
+        await SetAiProgress(T("OpenAI is planning and drawing the pixels", "OpenAI plant und zeichnet die Pixel"));
+        var generated = await generationTask;
+        aiRequestActive = false;
+        if (generated is null || StudioAsset?.Id != asset.Id)
+        {
+            var failed = !string.IsNullOrWhiteSpace(State.Error);
+            await SetAiProgress(failed ? T("Request failed", "Anfrage fehlgeschlagen") : T("Generation cancelled", "Generierung abgebrochen"), false, failed, false, failed ? ErrorText(State.Error!) : "");
+            return;
+        }
+        aiSpriteCandidate = generated;
+        await SetAiProgress(T("Response received — pixels and quality checks passed", "Antwort empfangen – Pixel und Qualitätsprüfung abgeschlossen"));
+        await JS.InvokeVoidAsync("spriteStudio.renderGeneratedPreview", "aiSpritePreview", asset.Width, asset.Height, generated.Pixels);
+        await SetAiProgress(T("Preview ready", "Vorschau bereit"), false, false, true);
+    }
+    private async Task AcceptAiSprite()
+    {
+        var asset = StudioAsset; var generated = aiSpriteCandidate;
+        if (asset is null || generated is null) return;
+        aiSpriteDrawing = true; aiSuccessPulse = false;
+        await SetAiProgress(T("Applying pixels to the sprite", "Pixel werden auf den Sprite übertragen"));
+        try
+        {
+            await JS.InvokeVoidAsync("spriteStudio.applyGeneratedPixels", "spriteEditorCanvas", generated.Pixels);
+            await SetAiProgress(T("Saving AI result", "KI-Ergebnis wird gespeichert"));
+            await State.SaveSpriteAiMetadataAsync(asset, generated);
+            await SetAiProgress(T("Sprite applied and saved", "Sprite übernommen und gespeichert"), false, false, true);
+            await Task.Delay(1100);
+            showAiSpriteDialog = false; aiSpriteCandidate = null;
+        }
+        catch (JSException ex) { Logger.LogWarning(ex, "AI sprite animation failed"); await SetAiProgress(T("Sprite could not be applied", "Sprite konnte nicht übernommen werden"), false, true); }
+        finally { aiSpriteDrawing = false; await InvokeAsync(StateHasChanged); }
+    }
+    private async Task SetAiProgress(string step, bool spinning = true, bool failed = false, bool success = false, string detail = "")
+    {
+        aiProgressStep = step; aiProgressDetail = detail; aiProgressSpinning = spinning; aiProgressFailed = failed; aiSuccessPulse = success;
+        await InvokeAsync(StateHasChanged);
+    }
+    private void DiscardAiSprite() { aiSpriteCancellation?.Cancel(); aiSpriteCandidate = null; aiProgressStep = ""; aiProgressDetail = ""; aiProgressSpinning = false; aiProgressFailed = false; aiSuccessPulse = false; aiRequestActive = false; showAiSpriteDialog = false; }
+    private void CancelAiSprite() { aiRequestActive = false; aiSpriteCancellation?.Cancel(); }
+    private void HandleAiSpriteKey(KeyboardEventArgs args) { if (args.Key == "Escape") DiscardAiSprite(); }
+    private void HandleSpriteSetupKey(KeyboardEventArgs args) { if (args.Key == "Escape") showSpriteSetupDialog = false; }
+    private static void CloseOnEscape(KeyboardEventArgs args, Action close) { if (args.Key == "Escape") close(); }
+    [JSInvokable]
+    public Task SpriteDirtyChanged(bool dirty)
+    {
+        spriteDirty = dirty;
+        if (dirty && !spriteAutosaving) ScheduleSpriteAutoSave();
+        return InvokeAsync(StateHasChanged);
+    }
+    [JSInvokable] public async Task SpriteColorPicked(string color) { if (!IsHexColor(color)) return; spriteColor = color.ToLowerInvariant(); await JS.InvokeVoidAsync("sprite2world.setPreference", "spritePrimaryColor", spriteColor); await InvokeAsync(StateHasChanged); }
+    [JSInvokable] public async Task SpriteSecondaryColorPicked(string color) { if (!IsHexColor(color)) return; spriteSecondaryColor = color.ToLowerInvariant(); await JS.InvokeVoidAsync("sprite2world.setPreference", "spriteSecondaryColor", spriteSecondaryColor); await InvokeAsync(StateHasChanged); }
+    [JSInvokable] public Task SpriteToolPicked(string tool) { spriteTool = tool; return InvokeAsync(StateHasChanged); }
+    private void ToggleAssetSelection(string id, bool selected) { if (selected) selectedAssetIds.Add(id); else selectedAssetIds.Remove(id); }
+    private void ClearAssetSelection() => selectedAssetIds.Clear();
+    private void AssignCategory() { if (selectedAssetIds.Count == 0 || string.IsNullOrWhiteSpace(newCategoryName)) return; State.SetCategory(selectedAssetIds, newCategoryName); newCategoryName = ""; selectedAssetIds.Clear(); }
+    private void ShowAllSpriteFolders() { activeLibraryTheme = null; activeLibrarySubfolder = null; }
+    private void OpenCreateFolderDialog()
+    {
+        activeAssetMenuId = null; newFolderTheme = activeLibraryTheme ?? ""; newFolderSubfolder = ""; showCreateFolderDialog = true;
+    }
+    private void CloseCreateFolderDialog() => showCreateFolderDialog = false;
+    private void SelectNewFolderTheme(string theme) { newFolderTheme = theme; newFolderSubfolder = ""; }
+    private void SelectNewFolderParent(string theme, string subfolder) { newFolderTheme = theme; newFolderSubfolder = subfolder; }
+    private async Task CreateLibraryFolder()
+    {
+        if (string.IsNullOrWhiteSpace(newFolderTheme)) return;
+        await State.CreateAssetFolderAsync(newFolderTheme, newFolderSubfolder);
+        activeLibraryTheme = NormalizeLibraryThemeName(newFolderTheme); activeLibrarySubfolder = NormalizeLibraryFolderName(newFolderSubfolder, "Sprites"); expandedLibraryThemes.Add(activeLibraryTheme); showCreateFolderDialog = false;
+    }
+    private void ToggleLibraryTheme(string theme)
+    {
+        if (!expandedLibraryThemes.Add(theme)) expandedLibraryThemes.Remove(theme);
+    }
+    private void SelectLibraryFolder(string theme, string? subfolder)
+    {
+        activeLibraryTheme = theme; activeLibrarySubfolder = subfolder; expandedLibraryThemes.Add(theme);
+    }
+    private void BeginSpriteDrag(string assetId)
+    {
+        draggingLibraryAssetId = assetId; dragOverLibraryFolder = null; activeAssetMenuId = null;
+    }
+    private void EndSpriteDrag() { draggingLibraryAssetId = null; dragOverLibraryFolder = null; }
+    private void EnterThemeDropTarget(string theme)
+    {
+        if (draggingLibraryAssetId is null) return;
+        expandedLibraryThemes.Add(theme); dragOverLibraryFolder = $"theme:{theme}";
+    }
+    private void EnterFolderDropTarget(string theme, string folder)
+    {
+        if (draggingLibraryAssetId is null) return;
+        dragOverLibraryFolder = $"folder:{theme}/{folder}";
+    }
+    private Task DropSpriteOnTheme(string theme)
+    {
+        var asset = State.Assets.FirstOrDefault(item => item.Id == draggingLibraryAssetId);
+        return asset is null ? Task.CompletedTask : MoveDraggedSprite(asset, theme, AssetSubfolder(asset));
+    }
+    private Task DropSpriteIntoFolder(string theme, string folder)
+    {
+        var asset = State.Assets.FirstOrDefault(item => item.Id == draggingLibraryAssetId);
+        return asset is null ? Task.CompletedTask : MoveDraggedSprite(asset, theme, folder);
+    }
+    private async Task MoveDraggedSprite(AssetDefinition asset, string theme, string folder)
+    {
+        if (!string.Equals(AssetThemeKey(asset), theme, StringComparison.OrdinalIgnoreCase) || !string.Equals(AssetSubfolder(asset), folder, StringComparison.OrdinalIgnoreCase))
+            await State.UpdateAssetLibraryEntryAsync(asset, asset.FileName, theme, folder);
+        EndSpriteDrag();
+    }
+    private void ToggleAssetMenu(string assetId) => activeAssetMenuId = activeAssetMenuId == assetId ? null : assetId;
+    private void CloseAssetMenu() => activeAssetMenuId = null;
+    private void OpenAssetManager(AssetDefinition asset, string mode)
+    {
+        activeAssetMenuId = null; managedLibraryAssetId = asset.Id; assetManagerMode = mode;
+        assetManagerName = Path.GetFileNameWithoutExtension(asset.FileName);
+        assetManagerTheme = AssetThemeKey(asset); assetManagerSubfolder = AssetSubfolder(asset);
+        showAssetManagerDialog = true;
+    }
+    private void CloseAssetManager() { showAssetManagerDialog = false; managedLibraryAssetId = null; }
+    private void SelectAssetManagerFolder(string theme, string subfolder) { assetManagerTheme = theme; assetManagerSubfolder = subfolder; }
+    private async Task SaveAssetManager()
+    {
+        var asset = ManagedLibraryAsset; if (asset is null) return;
+        if (assetManagerMode == "rename") await State.UpdateAssetLibraryEntryAsync(asset, assetManagerName);
+        else
+        {
+            await State.UpdateAssetLibraryEntryAsync(asset, asset.FileName, assetManagerTheme, assetManagerSubfolder);
+            activeLibraryTheme = AssetThemeKey(asset); activeLibrarySubfolder = AssetSubfolder(asset); expandedLibraryThemes.Add(activeLibraryTheme);
+        }
+        CloseAssetManager();
+    }
+    private async Task RemoveStudioAsset(AssetDefinition asset) { activeAssetMenuId = null; await RemoveAsset(asset); }
+    private void SelectBrush(AssetDefinition asset) { if (asset.Excluded) return; brushAssetId = asset.Id; if (editorTool == "draw") State.ActivateLayerForAsset(brushAssetId); pendingCanvasRender = true; }
+    private void SetEditorTool(string tool) { editorTool = tool; activeTab = "World Preview"; if (tool == "draw" && brushAssetId is null) { assetPanelCollapsed = false; assetPanelFloating = false; } else if (tool == "draw") State.ActivateLayerForAsset(brushAssetId!); pendingCanvasRender = true; }
+    private void ToggleWorldCursorLight() { worldLightingEnabled = !worldLightingEnabled || editorTool != "light-cursor"; editorTool = worldLightingEnabled ? "light-cursor" : "pan"; activeTab = "World Preview"; pendingCanvasRender = true; }
+    private void ActivateWorldLightPlacement() { worldLightingEnabled = true; editorTool = editorTool == "light-place" ? "pan" : "light-place"; activeTab = "World Preview"; pendingCanvasRender = true; }
+    private async Task DisableWorldLighting() { worldLightingEnabled = false; editorTool = "pan"; activeTab = "World Preview"; await JS.InvokeVoidAsync("sprite2world.clearLights", "worldCanvas"); pendingCanvasRender = true; }
+    private void ChangeWorldLightIntensity(ChangeEventArgs e) { if (double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value)) { worldLightIntensity = Math.Clamp(value, .1, 3); pendingCanvasRender = true; } }
+    private void ChangeWorldLightRange(ChangeEventArgs e) { if (double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value)) { worldLightRange = Math.Clamp(value, 3, 24); pendingCanvasRender = true; } }
+    private void ChangeWorldLightColor(ChangeEventArgs e) { var value = e.Value?.ToString(); if (!string.IsNullOrWhiteSpace(value) && value.Length == 7 && value[0] == '#') { worldLightColor = value; pendingCanvasRender = true; } }
+    private void ToggleAssets() { assetPanelCollapsed = !assetPanelCollapsed; if (!assetPanelCollapsed) assetPanelFloating = false; }
+    private void ToggleLayers() => layersCollapsed = !layersCollapsed;
+    private void TogglePrompt() => promptCollapsed = !promptCollapsed;
+    private void ToggleBlueprintDialog() { showBlueprintDialog = !showBlueprintDialog; if (showBlueprintDialog) showChecksDialog = false; }
+    private void ToggleChecksDialog() { showChecksDialog = !showChecksDialog; if (showChecksDialog) showBlueprintDialog = false; }
+    private void OpenChecksDialog() { showChecksDialog = true; showBlueprintDialog = false; }
+    private void OpenWorldExportDialog() { exportSprite = false; showExportDialog = true; showSettings = false; showProjects = false; }
+    private void OpenSpriteExportDialog() { exportSprite = true; showExportDialog = true; showSettings = false; showProjects = false; }
+    private void ToggleAssetFloating() { assetPanelFloating = !assetPanelFloating; assetPanelCollapsed = false; }
+    private void ShowMoreAssets() => visibleAssetLimit += AssetPageSize;
+    private async Task RemoveAsset(AssetDefinition asset)
+    {
+        if (!await JS.InvokeAsync<bool>("confirm", T($"Remove {asset.FileName} from this project?", $"{asset.FileName} aus diesem Projekt entfernen?"))) return;
+        await State.RemoveAssetsAsync([asset.Id]); selectedAssetIds.Remove(asset.Id);
+    }
+    private async Task RemoveSelectedAssets()
+    {
+        if (!await JS.InvokeAsync<bool>("confirm", T($"Remove {selectedAssetIds.Count:N0} selected assets from this project?", $"{selectedAssetIds.Count:N0} ausgewählte Assets aus diesem Projekt entfernen?"))) return;
+        var ids = selectedAssetIds.ToArray(); await State.RemoveAssetsAsync(ids); selectedAssetIds.Clear();
+    }
+    private async Task RemoveLayer(WorldLayer layer) { if (await JS.InvokeAsync<bool>("confirm", T($"Delete layer ‘{LocalizedLayerName(layer)}’ with {layer.Placements.Count:N0} elements?", $"Ebene „{LocalizedLayerName(layer)}“ mit {layer.Placements.Count:N0} Elementen löschen?"))) State.RemoveLayer(layer.Id); }
+    [JSInvokable]
+    public Task CanvasEdit(int x, int y, double offsetX, double offsetY, string tool)
+    {
+        if (tool == "draw" && brushAssetId is not null) State.Paint(brushAssetId, x, y, offsetX, offsetY);
+        else if (tool == "erase") State.Erase(x, y, offsetX, offsetY);
+        return Task.CompletedTask;
+    }
+    [JSInvokable]
+    public Task CanvasDrop(string assetId, int x, int y, double offsetX, double offsetY)
+    {
+        brushAssetId = assetId; State.ActivateLayerForAsset(assetId); editorTool = "draw"; State.Paint(assetId, x, y, offsetX, offsetY); activeTab = "World Preview"; pendingCanvasRender = true; return Task.CompletedTask;
+    }
+    private void ChangeRole(AssetDefinition asset, ChangeEventArgs e) { if (Enum.TryParse<AssetRole>(e.Value?.ToString(), out var role)) State.SetRole(asset, role); }
+    private void ToggleGrid() { showGrid = !showGrid; pendingCanvasRender = true; }
+    private void ToggleElementSnap() { snapElementsToGrid = !snapElementsToGrid; pendingCanvasRender = true; }
+    private void ApplyDisplaySettings() => pendingCanvasRender = true;
+    [JSInvokable]
+    public Task WorldCameraChanged(double nextZoom) { zoom = Math.Clamp(nextZoom, .4, 3); return InvokeAsync(StateHasChanged); }
+    private Task ZoomIn() => JS.InvokeVoidAsync("sprite2world.zoomIn", "worldCanvas").AsTask();
+    private Task ZoomOut() => JS.InvokeVoidAsync("sprite2world.zoomOut", "worldCanvas").AsTask();
+    private Task FitCanvas() => JS.InvokeVoidAsync("sprite2world.fit", "worldCanvas").AsTask();
+    private void StartIntegratedPlaytest() { activeTab = "Playtest"; editorTool = "pan"; pendingPlayStart = true; pendingCanvasRender = true; }
+    private async Task StopIntegratedPlaytest() { await JS.InvokeVoidAsync("sprite2world.stop", "worldCanvas"); activeTab = "World Preview"; pendingCanvasRender = true; }
+    private Task ResetPlayer() => JS.InvokeVoidAsync("sprite2world.resetPlayer", "worldCanvas").AsTask();
+    private async Task ExportJson() { var json = State.ExportJson(); if (json is not null) await JS.InvokeVoidAsync("sprite2world.downloadText", $"{SafeFileName(State.ProjectName)}.sprite2world.json", json, "application/json"); showExportDialog = false; }
+    private async Task ExportSpriteMaterial(MaterialChannel channel)
+    {
+        if (StudioAsset is null) return;
+        var base64 = await JS.InvokeAsync<string?>("spriteStudio.exportChannelBase64", "spriteEditorCanvas", channel.ToString().ToLowerInvariant());
+        if (string.IsNullOrWhiteSpace(base64)) return;
+        var suffix = channel.ToString().ToLowerInvariant();
+        await JS.InvokeVoidAsync("sprite2world.downloadBase64", $"{SafeFileName(Path.GetFileNameWithoutExtension(StudioAsset.FileName))}-{suffix}.png", base64, "image/png");
+        showExportDialog = false;
+    }
+    private async Task ExportSpriteMaterialZip()
+    {
+        if (StudioAsset is null) return; var stem = SafeFileName(Path.GetFileNameWithoutExtension(StudioAsset.FileName));
+        await JS.InvokeVoidAsync("spriteStudio.downloadMaterialPackage", "spriteEditorCanvas", stem); showExportDialog = false;
+    }
+    private async Task ExportWorldMaterial(MaterialChannel channel)
+    {
+        if (State.World is null) return; await JS.InvokeVoidAsync("sprite2world.exportWorldMaterial", "worldCanvas", channel.ToString().ToLowerInvariant(), exportWorldLayersSeparately, SafeFileName(State.ProjectName)); showExportDialog = false;
+    }
+    private async Task ExportWorldMaterialZip()
+    {
+        if (State.World is null) return; await JS.InvokeVoidAsync("sprite2world.exportWorldMaterialPackage", "worldCanvas", exportWorldLayersSeparately, SafeFileName(State.ProjectName)); showExportDialog = false;
+    }
+    private void AddPrompt(string value) { State.Prompt = $"{State.Prompt.Trim()} {value}."; ScheduleAutoSave(); }
+    private void SetWorldEnvironment(string value) { State.SetWorldEnvironment(value); ScheduleAutoSave(); }
+    private IEnumerable<(string Prefix, string Label, string Value)> WorldPromptChips => State.WorldEnvironment switch
+    {
+        "Interior" => [("＋", T("Hallway", "Flur"), T("Add a central hallway", "Füge einen zentralen Flur hinzu")), ("＋", T("Side room", "Nebenraum"), T("Add an optional side room", "Füge einen optionalen Nebenraum hinzu")), ("＋", T("Doors", "Türen"), T("Use believable door placement", "Verwende glaubwürdige Türpositionen")), ("−", T("Clutter", "Unordnung"), T("Use less furniture clutter", "Verwende weniger Möbel und Unordnung"))],
+        "Overworld" => [("＋", T("Landmark", "Landmarke"), T("Add a memorable landmark", "Füge eine einprägsame Landmarke hinzu")), ("＋", T("Branch", "Abzweig"), T("Add an optional natural branch", "Füge einen optionalen natürlichen Abzweig hinzu")), ("＋", T("Route", "Route"), T("Add an alternate path", "Füge einen alternativen Weg hinzu")), ("−", T("Obstacles", "Hindernisse"), T("Use fewer blocked terrain areas", "Verwende weniger blockierte Geländegebiete"))],
+        _ => [("＋", T("Secret room", "Geheimraum"), T("Hidden treasure room", "Versteckter Schatzraum")), ("＋", T("Exploration", "Erkundung"), T("More exploration", "Mehr Erkundung")), ("＋", T("Loop", "Schleife"), T("One additional loop", "Eine zusätzliche Schleife")), ("−", T("Obstacles", "Hindernisse"), T("Fewer obstacles", "Weniger Hindernisse"))]
+    };
+    private string WorldRegionLabel => State.WorldEnvironment switch { "Interior" => T("rooms", "Räume"), "Overworld" => T("regions", "Gebiete"), _ => T("chambers", "Kammern") };
+    private void ChangeModel(string model) { State.Model = model; ScheduleAutoSave(); }
+    private bool CanMoveLayer(WorldLayer layer, int delta)
+    {
+        if (State.World is null || layer.Locked) return false;
+        var ordered = State.World.Layers.OrderBy(item => item.Order).ToList();
+        var index = ordered.FindIndex(item => item.Id == layer.Id); var target = index + delta;
+        return index >= 0 && target >= 0 && target < ordered.Count && !ordered[target].Locked;
+    }
+    private Task NewProject()
+    {
+        newWorldEnvironment = State.WorldEnvironment;
+        newWorldPrompt = NewWorldDefaultPrompt(newWorldEnvironment);
+        showSettings = false; showProjects = false; showWorldSetupDialog = true; return Task.CompletedTask;
+    }
+    private async Task ConfirmNewProject()
+    {
+        var name = string.IsNullOrWhiteSpace(newProjectName) ? T("New Project", "Neues Projekt") : newProjectName.Trim();
+        State.NewProject(name.Length > 80 ? name[..80] : name); State.SetWorldEnvironment(newWorldEnvironment); State.Prompt = newWorldPrompt.Trim();
+        await JS.InvokeVoidAsync("sprite2world.setPreference", "activeProjectId", State.ProjectId);
+        showWorldSetupDialog = false; brushAssetId = null; activeTab = "World Preview"; newProjectName = T("New Project", "Neues Projekt"); pendingCanvasRender = true;
+    }
+    private void HandleWorldSetupKey(KeyboardEventArgs args) { if (args.Key == "Escape") showWorldSetupDialog = false; }
+    private void SetNewWorldEnvironment(string environment)
+    {
+        var previousDefault = NewWorldDefaultPrompt(newWorldEnvironment);
+        newWorldEnvironment = environment;
+        if (string.IsNullOrWhiteSpace(newWorldPrompt) || string.Equals(newWorldPrompt.Trim(), previousDefault, StringComparison.OrdinalIgnoreCase)) newWorldPrompt = NewWorldDefaultPrompt(environment);
+    }
+    private static string NewWorldDefaultPrompt(string environment) => environment switch { "Interior" => "Create a coherent building interior with believable rooms, hallways and doors.", "Overworld" => "Create one continuous outdoor ground surface with sparse decoration, a few landmarks and readable turning paths or roads.", _ => DemoBlueprintFactory.DungeonPrompt };
+    private string WorldKindDescription(string kind) => kind switch { "Interior" => T("Rooms in one building", "Räume in einem Gebäude"), "Overworld" => T("One continuous outdoor area", "Eine durchgehende Außenfläche"), _ => T("Chambers and corridors", "Kammern und Korridore") };
+    private async Task ShowProjectDialog() { projectList = await State.ListProjectsAsync(); showProjects = true; }
+    private async Task CloseCurrentProject() { State.CloseProject(); await JS.InvokeVoidAsync("sprite2world.setPreference", "activeProjectId", ""); showProjects = false; brushAssetId = null; editorTool = "pan"; activeTab = "World Preview"; }
+    private async Task DeleteProject(Sprite2World.Contracts.ProjectSummary project) { if (!await JS.InvokeAsync<bool>("confirm", T($"Permanently delete project ‘{LocalizedProjectName(project.Name)}’?", $"Projekt „{LocalizedProjectName(project.Name)}“ endgültig löschen?"))) return; var deletedCurrent = State.ProjectId == project.Id; await State.DeleteProjectAsync(project.Id); if (deletedCurrent) await JS.InvokeVoidAsync("sprite2world.setPreference", "activeProjectId", ""); if (selectedLibraryProjectId == project.Id) selectedLibraryProjectId = null; projectList = await State.ListProjectsAsync(); }
+    private async Task LoadProject(string id) { showProjects = false; brushAssetId = null; activeTab = "World Preview"; await State.LoadProjectAsync(id); if (State.ProjectId == id) await JS.InvokeVoidAsync("sprite2world.setPreference", "activeProjectId", id); pendingCanvasRender = true; }
+    private static string SafeFileName(string value) => string.Concat(value.Select(c => char.IsLetterOrDigit(c) ? c : '-')).Trim('-').ToLowerInvariant();
+    private string T(string english, string german) => Localizer.Get(english, german);
+    private string LocalizedCategory(string category) => category switch { "Allgemein" or "General" => T("General", "Allgemein"), _ => category };
+    private string LocalizedLayerName(WorldLayer layer) => LocalizedLayerText(layer.Name);
+    private const string DefaultPromptEnglish = "Create a compact abandoned dungeon with six rooms, one main loop, two dead ends and a hidden treasure room. Put the exit in the largest room.";
+    private const string DefaultPromptGerman = "Erstelle einen kompakten verlassenen Dungeon mit sechs Räumen, einer Hauptschleife, zwei Sackgassen und einem versteckten Schatzraum. Platziere den Ausgang im größten Raum.";
+    private const string DefaultFeedbackEnglish = "Needs more exploration and another loop";
+    private const string DefaultFeedbackGerman = "Benötigt mehr Erkundung und eine weitere Schleife";
+    private string LocalizedProjectName(string name) => name switch { "Kein Projekt geöffnet" or "No project open" => T("No project open", "Kein Projekt geöffnet"), "Untitled World" => T("Untitled World", "Unbenannte Welt"), "Abandoned Dungeon" => T("Abandoned Dungeon", "Verlassener Dungeon"), _ => name };
+    private string LocalizedDate(DateTimeOffset value) => value.LocalDateTime.ToString("g", System.Globalization.CultureInfo.GetCultureInfo(Localizer.IsGerman ? "de-DE" : "en-US"));
+    private string IterationLabel(int count) => count == 1 ? T("iteration", "Iteration") : T("iterations", "Iterationen");
+    private string LocalizedBlueprintText(string value) => value switch
+    {
+        "Abandoned Dungeon" => T("Abandoned Dungeon", "Verlassener Dungeon"),
+        "Forgotten Entrance" => T("Forgotten Entrance", "Vergessener Eingang"), "Safe starting chamber" => T("Safe starting chamber", "Sichere Startkammer"),
+        "Pillared Hall" => T("Pillared Hall", "Säulenhalle"), "Central navigation hub" => T("Central navigation hub", "Zentraler Verbindungspunkt"),
+        "Flooded Archive" => T("Flooded Archive", "Überflutetes Archiv"), "Exploration branch" => T("Exploration branch", "Erkundungszweig"),
+        "Ruined Armory" => T("Ruined Armory", "Verfallene Waffenkammer"), "Optional dead end" => T("Optional dead end", "Optionale Sackgasse"),
+        "Dust Crypt" => T("Dust Crypt", "Staubgruft"), "Hidden treasure room" => T("Hidden treasure room", "Versteckter Schatzraum"),
+        "Moon Sanctum" => T("Moon Sanctum", "Mondsanktuarium"), "Final chamber and exit" => T("Final chamber and exit", "Letzte Kammer und Ausgang"),
+        "Small" => T("Small", "Klein"), "Medium" => T("Medium", "Mittel"), "Large" => T("Large", "Groß"), _ => value
+    };
+    private string StatusText(string status)
+    {
+        var exact = status switch
+        {
+            "Ready" => T("Ready", "Bereit"), "Loading demo workspace…" => T("Loading demo workspace…", "Demo-Arbeitsbereich wird geladen…"), "Demo workspace ready" => T("Demo workspace ready", "Demo-Arbeitsbereich bereit"),
+            "Importing and validating assets…" => T("Importing and validating assets…", "Assets werden importiert und geprüft…"), "Creating original demo asset pack…" => T("Creating original demo asset pack…", "Originales Demo-Asset-Paket wird erstellt…"),
+            "Demo assets loaded" => T("Demo assets loaded", "Demo-Assets geladen"), "OpenAI is classifying the asset library…" => T("OpenAI is classifying the asset library…", "OpenAI klassifiziert die Asset-Bibliothek…"),
+            "AI classification complete" => T("AI classification complete", "KI-Klassifizierung abgeschlossen"), "OpenAI is designing the semantic blueprint…" => T("OpenAI is designing the semantic blueprint…", "OpenAI entwirft den semantischen Plan…"),
+            "Building deterministic world…" => T("Building deterministic world…", "Deterministische Welt wird erstellt…"), "Improving semantic blueprint from feedback…" => T("Improving semantic blueprint from feedback…", "Semantischer Plan wird anhand des Feedbacks verbessert…"),
+            "Running independent validation…" => T("Running independent validation…", "Unabhängige Prüfung läuft…"), "All checks passed" => T("All checks passed", "Alle Prüfungen bestanden"), "Validation found issues" => T("Validation found issues", "Die Prüfung hat Probleme gefunden"),
+            "Saving project…" => T("Saving project…", "Projekt wird gespeichert…"), "Project saved" => T("Project saved", "Projekt gespeichert"), "Opening project…" => T("Opening project…", "Projekt wird geöffnet…"),
+            "New project" => T("New project", "Neues Projekt"), "Project closed" or "Projekt geschlossen" => T("Project closed", "Projekt geschlossen"), "Deleting project…" => T("Deleting project…", "Projekt wird gelöscht…"),
+            "Project deleted" => T("Project deleted", "Projekt gelöscht"), "Operation failed" => T("Operation failed", "Aktion fehlgeschlagen"), _ => status
+        };
+        if (exact != status) return exact;
+        if (status.StartsWith("Imported ", StringComparison.Ordinal)) return Localizer.IsGerman ? status.Replace("Imported ", "Importiert ").Replace(" of ", " von ").Replace(" files", " Dateien").Replace(" assets", " Assets") : status;
+        if (status.StartsWith("Removed ", StringComparison.Ordinal)) return Localizer.IsGerman ? status.Replace("Removed ", "Entfernt ").Replace(" assets", " Assets") : status;
+        if (status.StartsWith("World v", StringComparison.Ordinal)) return Localizer.IsGerman ? status.Replace(" generated · seed ", " generiert · Seed ") : status;
+        if (status.StartsWith("Improved world ", StringComparison.Ordinal)) return Localizer.IsGerman ? status.Replace("Improved world ", "Verbesserte Welt ").Replace(" ready", " bereit") : status;
+        if (status.StartsWith("Opened ", StringComparison.Ordinal)) return Localizer.IsGerman ? status.Replace("Opened ", "Geöffnet: ") : status;
+        if (status.StartsWith("Restored v", StringComparison.Ordinal)) return Localizer.IsGerman ? status.Replace("Restored ", "Wiederhergestellt: ") : status;
+        if (status.StartsWith("Category assigned: ", StringComparison.Ordinal)) return T(status, $"Rubrik zugewiesen: {LocalizedCategory(status[19..])}");
+        if (status.StartsWith("Layer added: ", StringComparison.Ordinal)) return T(status, $"Ebene hinzugefügt: {LocalizedLayerText(status[13..])}");
+        if (status.StartsWith("Layer removed: ", StringComparison.Ordinal)) return T(status, $"Ebene entfernt: {LocalizedLayerText(status[15..])}");
+        if (status.StartsWith("Drawing on ", StringComparison.Ordinal) || status.StartsWith("Zeichnen auf ", StringComparison.Ordinal)) { var layer = status.Replace("Zeichnen auf ", "").Replace("Drawing on ", ""); return T($"Drawing on {LocalizedLayerText(layer)}", $"Zeichnen auf {LocalizedLayerText(layer)}"); }
+        if (status.StartsWith("Erased on ", StringComparison.Ordinal) || status.StartsWith("Radiert auf ", StringComparison.Ordinal)) { var layer = status.Replace("Radiert auf ", "").Replace("Erased on ", ""); return T($"Erased on {LocalizedLayerText(layer)}", $"Radiert auf {LocalizedLayerText(layer)}"); }
+        return status;
+    }
+    private string LocalizedLayerText(string value) => value switch
+    {
+        "Floor & Walls" or "Boden & Wände" => T("Floor & Walls", "Boden & Wände"),
+        "Decorations" or "Dekorationen" => T("Decorations", "Dekorationen"),
+        _ when value.StartsWith("Layer ", StringComparison.Ordinal) && Localizer.IsGerman => value.Replace("Layer ", "Ebene "),
+        _ when value.StartsWith("Ebene ", StringComparison.Ordinal) && !Localizer.IsGerman => value.Replace("Ebene ", "Layer "),
+        _ => value
+    };
+    private string LocalizedClassificationSource(string value) => value switch
+    {
+        "Unclassified" => T("Unclassified", "Nicht klassifiziert"), "Folder hint" => T("Folder hint", "Ordnerhinweis"),
+        "Demo manifest" => T("Demo manifest", "Demo-Manifest"), "OpenAI vision" => T("OpenAI vision", "OpenAI-Bilderkennung"),
+        "Manual" => T("Manual", "Manuell"), _ => value
+    };
+    private string ErrorText(string error)
+    {
+        if (error == "The operation failed. Check docker compose logs for details.") return T(error, "Die Aktion ist fehlgeschlagen. Details stehen in den Docker-Compose-Logs.");
+        if (error == "The saved project no longer exists.") return T(error, "Das gespeicherte Projekt existiert nicht mehr.");
+        if (error == "OpenAI returned overlapping sprite pixels.") return T(error, "OpenAI hat sich überschneidende Sprite-Pixel zurückgegeben.");
+        if (error == "OpenAI returned an invalid sprite run.") return T(error, "OpenAI hat eine ungültige Pixelzeile zurückgegeben.");
+        if (error.StartsWith("AI fallback: ", StringComparison.Ordinal) && Localizer.IsGerman) return error.Replace("AI fallback: ", "KI-Fallback: ");
+        return error;
+    }
+    private static string Percent(double? value) => value is null ? "—" : $"{value:P0}";
+    private static string Point(GridPoint? value) => value is null ? "—" : $"({value.Value.X}, {value.Value.Y})";
+    private string RoleLabel(AssetRole role) => Localizer.Role(role);
+    private string LayerPurposeLabel(WorldLayer layer) => layer.Purpose switch
+    {
+        LayerPurpose.Terrain => T($"Layer {layer.Order} · Floor/Walls", $"Ebene {layer.Order} · Boden/Wände"),
+        LayerPurpose.Decoration => T($"Layer {layer.Order} · Decoration", $"Ebene {layer.Order} · Dekoration"),
+        _ => T($"Layer {layer.Order} · User", $"Ebene {layer.Order} · Benutzer")
+    };
+    private void ScheduleAutoSave()
+    {
+        autoSaveDebounce?.Cancel(); autoSaveDebounce?.Dispose();
+        autoSaveDebounce = new CancellationTokenSource();
+        _ = AutoSaveAfterDelayAsync(autoSaveDebounce.Token);
+    }
+    private async Task AutoSaveAfterDelayAsync(CancellationToken cancellationToken)
+    {
+        try { await Task.Delay(700, cancellationToken); await State.AutoSaveAsync(cancellationToken); await InvokeAsync(() => SaveWorldPreviewAsync(cancellationToken)); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Logger.LogWarning(ex, "Automatic project save failed"); }
+    }
+    private async Task SaveWorldPreviewAsync(CancellationToken cancellationToken = default)
+    {
+        if (State.World is null || libraryStudioOpen || cancellationToken.IsCancellationRequested) return;
+        try
+        {
+            var base64 = await JS.InvokeAsync<string?>("sprite2world.previewBase64", cancellationToken, "worldCanvas", 1600);
+            if (!string.IsNullOrWhiteSpace(base64)) await State.SaveWorldPreviewAsync(base64, cancellationToken);
+        }
+        catch (JSException ex) { Logger.LogDebug(ex, "World preview is not ready yet"); }
+    }
+    private void ScheduleSpriteAutoSave()
+    {
+        spriteAutoSaveDebounce?.Cancel(); spriteAutoSaveDebounce?.Dispose();
+        spriteAutoSaveDebounce = new CancellationTokenSource();
+        _ = AutoSaveSpriteAfterDelayAsync(spriteAutoSaveDebounce.Token);
+    }
+    private async Task AutoSaveSpriteAfterDelayAsync(CancellationToken cancellationToken)
+    {
+        try { await Task.Delay(650, cancellationToken); await InvokeAsync(() => SaveSpriteNowAsync(cancellationToken)); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Logger.LogWarning(ex, "Automatic sprite save failed"); }
+    }
+    private async Task SaveSpriteNowAsync(CancellationToken cancellationToken = default)
+    {
+        var asset = StudioAsset;
+        if (!spriteDirty || spriteAutosaving || asset is null || activeMaterialChannel == MaterialChannel.Lit || cancellationToken.IsCancellationRequested) return;
+        var base64 = await JS.InvokeAsync<string?>("spriteStudio.exportBase64", cancellationToken, "spriteEditorCanvas");
+        if (string.IsNullOrWhiteSpace(base64)) return;
+        spriteAutosaving = true; await InvokeAsync(StateHasChanged);
+        try
+        {
+            if (activeMaterialChannel == MaterialChannel.Base) await State.SaveSpriteImageAsync(asset, base64);
+            else await State.SaveMaterialMapAsync(asset, activeMaterialChannel, base64, false);
+            spriteDirty = false;
+            await JS.InvokeVoidAsync("spriteStudio.markSaved", cancellationToken, "spriteEditorCanvas");
+        }
+        finally { spriteAutosaving = false; await InvokeAsync(StateHasChanged); }
+    }
+    public ValueTask DisposeAsync() { State.Changed -= StateChanged; Localizer.Changed -= LanguageChanged; autoSaveDebounce?.Cancel(); autoSaveDebounce?.Dispose(); spriteAutoSaveDebounce?.Cancel(); spriteAutoSaveDebounce?.Dispose(); dotNetReference?.Dispose(); return ValueTask.CompletedTask; }
+}
