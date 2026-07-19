@@ -59,5 +59,6 @@ app.UseStaticFiles(new StaticFileOptions
     OnPrepareResponse = context => { context.Context.Response.Headers.CacheControl = "public,max-age=31536000,immutable"; context.Context.Response.Headers["X-Content-Type-Options"] = "nosniff"; }
 });
 app.MapHealthChecks("/health");
+app.MapStaticAssets();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 app.Run();
