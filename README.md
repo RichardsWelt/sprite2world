@@ -4,6 +4,51 @@
 
 Sprite2World is a containerized AI-assisted level-design tool for importing pre-sliced PNG sprites, creating a semantic room blueprint with OpenAI, engineering it into a deterministic tile map, validating and repairing that map, and playtesting the result immediately in the browser.
 
+## How Codex & GPT-5.6 were used
+
+This project was built end-to-end with **Codex as the primary engineering collaborator** and uses the **GPT-5.6 model family as the creative intelligence inside the product**. Under human direction, Codex supported nearly every layer of the build—from product framing and architecture to implementation, debugging, browser QA, Docker packaging and submission documentation.
+
+### Codex during development
+
+Codex was used as an active engineering partner throughout the complete development loop:
+
+- **Product and architecture:** turned the initial concept and visual references into a scoped MVP, a two-service architecture and a clear boundary between AI intent and deterministic game logic.
+- **Full-stack implementation:** created and refined the C# domain, application, infrastructure, worker and Blazor web layers; implemented the Canvas editor, persistence, import pipeline, generator, validator, repair flow and exports.
+- **UI and interaction design:** translated design feedback into the three-column editor, onboarding, project and sprite libraries, inspectors, dialogs, responsive behavior and accessibility improvements.
+- **Debugging and verification:** built containers, inspected logs, tested the application in a real browser and diagnosed release-only problems such as missing Blazor static assets in the optimized Docker build.
+- **Quality and release work:** added deterministic tests, security checks for PNG/ZIP imports, health checks, Docker Compose setup, architecture notes and clean-clone verification from the public GitHub repository.
+
+Codex did not merely generate a code sample. It was used iteratively to inspect real results, identify failures, edit the repository, rebuild the system and verify the finished behavior.
+
+### GPT-5.6 inside Sprite2World
+
+Sprite2World integrates GPT-5.6 through the **OpenAI Responses API** for three focused workflows:
+
+| Workflow | What GPT-5.6 contributes | What deterministic code retains |
+| --- | --- | --- |
+| Sprite classification | Interprets imported sprite images and assigns semantic roles using vision input | Stable asset IDs, manual overrides, validation and persistence |
+| World design | Converts a natural-language request into a strict, schema-constrained semantic blueprint | Room coordinates, corridors, walls, collisions, start/exit placement and seeded generation |
+| Feedback iteration | Revises the semantic blueprint from contextual user feedback | Version history, regeneration, validation, repair and export |
+
+The model is deliberately **not** asked to generate thousands of raw tile coordinates. GPT-5.6 handles visual understanding, intent and semantic structure; Sprite2World turns that structure into a reproducible and testable world. This makes the AI contribution both visible and trustworthy.
+
+The model picker exposes the GPT-5.6 family by workload:
+
+- **GPT-5.6 Luna** is the efficient default for cost-sensitive experimentation.
+- **GPT-5.6 Terra** offers a balance of capability and cost.
+- **GPT-5.6 Sol** provides the highest-quality option for demanding world-design prompts.
+- The **GPT-5.6** alias routes to Sol.
+
+Users can also choose low, medium or high reasoning effort. API responses use strict Structured Outputs and `store=false`, and an unavailable AI request falls back to an explicit deterministic demo blueprint so the core workflow remains testable.
+
+This division of labor is the project's central idea:
+
+> **GPT-5.6 designs the intent. Sprite2World engineers the playable result.**
+
+Learn more in OpenAI's [GPT-5.6 model guide](https://developers.openai.com/api/docs/guides/model-guidance?model=gpt-5.6).
+
+
+
 ## MVP capabilities
 
 - polished Blazor Web App editor with a three-column, desktop-first dark UI
@@ -29,8 +74,8 @@ The application opens directly into the deterministic demo workspace. Add curren
 The only prerequisite is a running Docker Desktop installation or Docker Engine with Docker Compose. .NET, Node.js, a database and an OpenAI key are **not** required to start the application.
 
 ```bash
-git clone https://github.com/YOUR-GITHUB-NAME/Sprite2World.git
-cd Sprite2World
+git clone https://github.com/RichardsWelt/sprite2world.git
+cd sprite2world
 docker compose up -d --build --wait
 ```
 
